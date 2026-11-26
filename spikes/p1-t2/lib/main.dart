@@ -29,9 +29,16 @@ const suites = <String, List<String>>{
   '无缝 A → B': ['gap-a.wav', 'gap-b.wav'],
   'DSF': ['dsd64.dsf'],
   '已封装 DoP': ['dop64.wav'],
+  'PCM 24 源样值回读': ['wav24.wav'],
+  'PCM A → B 边界回读': ['gap-a.wav', 'gap-b.wav'],
   '系统控制 / 循环': [
     'flac44100.flac', 'alac96.m4a', 'flac192000.flac', 'lossy.aac',
   ],
+};
+
+const captures = {
+  'PCM 24 源样值回读': 'p1t2-pcm24.wav',
+  'PCM A → B 边界回读': 'p1t2-gap.wav',
 };
 
 class AudioProbe extends StatefulWidget {
@@ -55,6 +62,9 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
   var busy = false;
   var suite = '';
   var gapless = '';
+  var defaultGapless = '';
+  var defaultAo = '';
+  var defaultAudioFormat = '';
   var requestDop = false;
   var shuffle = false;
   var interrupted = false;
@@ -110,6 +120,9 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
           if (suite.isNotEmpty) await snapshot(property);
         });
       }
+      defaultGapless = await mpv.getProperty('options/gapless-audio');
+      defaultAo = await mpv.getProperty('options/ao');
+      defaultAudioFormat = await mpv.getProperty('options/audio-format');
       await snapshot('initialized');
       if (mounted) setState(() => prepared = true);
     } catch (error) {
@@ -140,6 +153,7 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
       'audio-out-params/samplerate', 'audio-out-params/format',
       'audio-out-params/channels', 'af', 'options/audio-samplerate',
       'options/gapless-audio', 'options/audio-spdif', 'options/audiounit-skip-session-management',
+      'options/ao', 'options/audio-format',
       'volume', 'speed', 'pause', 'time-pos',
     ]) {
       final value = await mpv.getProperty(key);
@@ -172,7 +186,7 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
     lastInfoSecond = state.position.inSeconds;
     setState(() {});
     unawaited(bridge.invokeMethod<void>('nowPlaying', {
-      'track': track,
+      'track': captures.containsKey(suite) ? '' : track,
       'playing': state.playing && !interrupted,
       'position': state.position.inMilliseconds / 1000,
       'duration': state.duration.inMilliseconds / 1000,
@@ -188,12 +202,26 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
       shuffle = false;
       await player.setShuffle(false);
       await player.setPlaylistMode(name == '系统控制 / 循环' ? PlaylistMode.loop : PlaylistMode.none);
-      if (gapless.isNotEmpty) await mpv.setProperty('options/gapless-audio', gapless);
+      await mpv.setProperty('options/gapless-audio', gapless.isEmpty ? defaultGapless : gapless);
+      final capture = captures[name];
+      if (capture != null) {
+        final path = await bridge.invokeMethod<String>('capturePath', capture);
+        await mpv.setProperty('options/ao-pcm-file', path!);
+        await mpv.setProperty('options/audio-format', capture == 'p1t2-pcm24.wav' ? 's32' : 's16');
+        await mpv.setProperty('options/ao', 'pcm');
+        if (await mpv.getProperty('options/ao') != 'pcm') {
+          throw StateError('mpv refused the PCM file output');
+        }
+      } else {
+        await mpv.setProperty('options/ao', defaultAo);
+        await mpv.setProperty('options/audio-format', defaultAudioFormat);
+      }
       final passthrough = name == 'DSF' && requestDop;
       await mpv.setProperty('options/audio-spdif', passthrough ? 'dsd' : '');
       await record('suite-start', {
         'requestedGapless': gapless.isEmpty ? null : gapless,
         'requestedDsdPassthrough': passthrough,
+        'captureFile': capture,
         'tracks': suites[name],
       });
       final media = suites[name]!.map((file) => Media(
@@ -234,7 +262,7 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
   }
 
   Future<void> systemEvent(MethodCall call) async {
-    if (!prepared || suite.isEmpty) return;
+    if (!prepared || suite.isEmpty || captures.containsKey(suite)) return;
     final data = Map<String, Object?>.from(call.arguments as Map);
     switch (call.method) {
       case 'remote':
@@ -310,10 +338,7 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
             DropdownMenuItem(value: 'yes', child: Text('gapless yes 对照')),
             DropdownMenuItem(value: 'no', child: Text('gapless no 对照')),
           ],
-          onChanged: !prepared || busy ? null : (value) {
-            setState(() => gapless = value!);
-            if (value!.isEmpty) unawaited(mpv.setProperty('options/gapless-audio', 'weak'));
-          },
+          onChanged: !prepared || busy ? null : (value) => setState(() => gapless = value!),
         ),
         SwitchListTile(
           title: const Text('下次 DSF 请求 DSD 直通'),

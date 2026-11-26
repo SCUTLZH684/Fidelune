@@ -70,11 +70,18 @@ def write_dsd():
     assert len(header) == 92
     (ROOT / "dsd64.dsf").write_bytes(header + planar)
     carrier = bytearray()
+    reverse_byte = bytes(int(f"{value:08b}"[::-1], 2) for value in range(256))
     for i in range(0, len(lanes[0]), 2):
         marker = 0x05 if i % 4 == 0 else 0xFA
         for lane in lanes:
-            carrier.extend((lane[i + 1], lane[i], marker))
+            carrier.extend((reverse_byte[lane[i + 1]], reverse_byte[lane[i]], marker))
     write_wav(ROOT / "dop64.wav", 176400, 24, 2, carrier)
+    for ch, lane in enumerate(lanes):
+        recovered = bytearray()
+        for i in range(3 * ch, len(carrier), 6):
+            assert carrier[i + 2] == (0x05 if i // 6 % 2 == 0 else 0xFA)
+            recovered.extend((reverse_byte[carrier[i + 1]], reverse_byte[carrier[i]]))
+        assert recovered == lane
 
 
 def generate():

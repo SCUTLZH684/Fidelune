@@ -62,6 +62,15 @@ import UIKit
         if args["event"] as? String == "heartbeat" { row["memoryBytes"] = memoryBytes() }
         record(row)
         reply(sample)
+      case "capturePath":
+        guard let name = call.arguments as? String, ["p1t2-pcm24.wav", "p1t2-gap.wav"].contains(name) else {
+          reply(FlutterMethodNotImplemented)
+          return
+        }
+        let documents = try FileManager.default.url(
+          for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+        )
+        reply(documents.appendingPathComponent(name).path)
       case "nowPlaying":
         updateNowPlaying(args)
         reply(nil)
