@@ -1,0 +1,105 @@
+name: P1-T1 unsigned iOS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'spikes/p1-t1/**'
+      - '.github/workflows/p1-t1-ios.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    runs-on: macos-15
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: A
+            build_number: 1
+          - artifact: A-repeat
+            build_number: 1
+          - artifact: B
+            build_number: 2
+    defaults:
+      run:
+        working-directory: spikes/p1-t1
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      BUILD_NUMBER: ${{ matrix.build_number }}
+    steps:
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: '3.44.0'
+      - name: Resolve locked dependencies and test Flutter UI
+        run: |
+          flutter pub get --enforce-lockfile
+          flutter analyze --no-pub
+          flutter test --no-pub
+      - name: Archive without signing
+        run: flutter build ipa --release --no-codesign --no-pub --build-number "$BUILD_NUMBER"
+      - name: Verify and package IPA and matching symbols
+        run: |
+          archive=build/ios/archive/Runner.xcarchive
+          app="$archive/Products/Applications/Runner.app"
+          dsym="$archive/dSYMs/Runner.app.dSYM"
+          out="$RUNNER_TEMP/p1t1"
+          mkdir -p "$out/Payload"
+          test ! -e "$app/embedded.mobileprovision"
+          test ! -d "$app/_CodeSignature"
+          if codesign --display "$app/Runner" 2>/dev/null; then
+            echo "Unexpected signature on Runner"
+            exit 1
+          fi
+          test "$(lipo -archs "$app/Runner")" = arm64
+          test "$(plutil -extract CFBundleIdentifier raw "$app/Info.plist")" = io.github.scutlzh684.fideluneP1t1
+          test "$(plutil -extract CFBundleVersion raw "$app/Info.plist")" = "$BUILD_NUMBER"
+          runner_uuid="$(dwarfdump --uuid "$app/Runner" | cut -d ' ' -f 2)"
+          test -n "$runner_uuid"
+          test "$(dwarfdump --uuid "$dsym" | cut -d ' ' -f 2)" = "$runner_uuid"
+          ditto "$app" "$out/Payload/Runner.app"
+          ditto -c -k --keepParent "$out/Payload" "$out/fidelune-p1t1-unsigned.ipa"
+          ditto -c -k --keepParent "$archive/dSYMs" "$out/fidelune-p1t1-dsyms.zip"
+          {
+            printf 'commit=%s\nrunner_image=%s %s\nbuild=release %s\n' "$GITHUB_SHA" "$ImageOS" "$ImageVersion" "$BUILD_NUMBER"
+            sw_vers
+            uname -m
+            xcodebuild -version
+            xcrun --sdk iphoneos --show-sdk-version
+            flutter --version
+            shasum -a 256 pubspec.lock
+            plutil -extract CFBundleIdentifier raw "$app/Info.plist"
+            plutil -extract MinimumOSVersion raw "$app/Info.plist"
+            lipo -archs "$app/Runner"
+            printf 'runner_uuid=%s\n' "$runner_uuid"
+            cd "$out"
+            wc -c fidelune-p1t1-unsigned.ipa
+            shasum -a 256 fidelune-p1t1-unsigned.ipa fidelune-p1t1-dsyms.zip
+          } > "$out/build-info.txt"
+          cat "$out/build-info.txt"
+      - name: Upload unsigned IPA and build metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: p1-t1-${{ matrix.artifact }}
+          path: |
+            ${{ runner.temp }}/p1t1/fidelune-p1t1-unsigned.ipa
+            ${{ runner.temp }}/p1t1/build-info.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Upload matching symbols
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: p1-t1-${{ matrix.artifact }}-symbols
+          path: ${{ runner.temp }}/p1t1/fidelune-p1t1-dsyms.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
