@@ -45,6 +45,7 @@ jobs:
           app="$archive/Products/Applications/Runner.app"
           dsym="$archive/dSYMs/Runner.app.dSYM"
           out="$RUNNER_TEMP/p1t2"
+          recipient="$PWD/tools/qa-artifact-recipient.pem"
           mkdir -p "$out/Payload"
           test ! -e "$app/embedded.mobileprovision"
           if codesign --display "$app/Runner" 2>/dev/null; then
@@ -86,9 +87,9 @@ jobs:
           # Keep the native bundle for owner's hardware QA while its redistribution audit is open.
           openssl_bin="$(brew --prefix openssl@3)/bin/openssl"
           "$openssl_bin" cms -encrypt -binary -aes256 -outform DER \
-            -in "$out/fidelune-p1t2-unsigned.ipa" -out "$out/fidelune-p1t2-unsigned.ipa.cms" tools/qa-artifact-recipient.pem
+            -in "$out/fidelune-p1t2-unsigned.ipa" -out "$out/fidelune-p1t2-unsigned.ipa.cms" "$recipient"
           "$openssl_bin" cms -encrypt -binary -aes256 -outform DER \
-            -in "$out/fidelune-p1t2-dsyms.zip" -out "$out/fidelune-p1t2-dsyms.zip.cms" tools/qa-artifact-recipient.pem
+            -in "$out/fidelune-p1t2-dsyms.zip" -out "$out/fidelune-p1t2-dsyms.zip.cms" "$recipient"
       - name: Upload encrypted QA bundle and build metadata
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
