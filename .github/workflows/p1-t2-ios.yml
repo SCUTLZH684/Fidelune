@@ -32,13 +32,15 @@ jobs:
         run: |
           command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null || brew install ffmpeg
           python3 tools/fixtures.py
-      - name: Resolve Flutter packages and analyze
+      - name: Resolve locked Flutter packages and analyze
         run: |
           flutter config --no-enable-swift-package-manager
-          flutter pub get
+          flutter pub get --enforce-lockfile
           flutter analyze --no-pub
       - name: Archive without signing
-        run: flutter build ipa --release --no-codesign --no-pub --build-number "$BUILD_NUMBER"
+        run: |
+          flutter build ipa --release --no-codesign --no-pub --build-number "$BUILD_NUMBER"
+          git diff --exit-code -- ios/Podfile.lock
       - name: Verify and package IPA and matching symbols
         run: |
           archive=build/ios/archive/Runner.xcarchive

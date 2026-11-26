@@ -67,4 +67,37 @@ USB 观察到同一签名团队、同一应用的新描述文件，于 11 月 26
 
 公开归档使用云构建记录与脱敏实测数据。原始截图、崩溃报告、设备与签名标识、描述文件及已签名 IPA 均未提交。三个已校验未签名 IPA、构建元数据及 A、B 的匹配符号保存在本机 `%LOCALAPPDATA%\Fidelune\P1-T1`。后续签装可使用桌面的 B。已清理本轮构建缓存、重复下载和用于本机诊断的临时敏感副本。
 
-P1-T1 的云构建、免费签装、真机运行、覆盖安装、主动延期和诊断证据已获得，可交给 G1 汇总。G1 整体还需要阶段 1 的音频、沙盒及选型证据。本报告截至 P1-T1。
+P1-T1 的云构建、免费签装、真机运行、覆盖安装、主动延期和诊断证据已获得，可交给 G1 汇总。G1 整体还需要阶段 1 的音频、沙盒及选型证据。
+
+## P1-T2 · iOS 高保真音频与系统控制
+
+### 设备与验证配置
+
+目标为 iPhone 17（USB 已识别为 `iPhone18,3`，iOS 27.2.1）、本机扬声器及 TOPPING DX5 II USB 输入。蓝牙待借测，AirPlay 按已确认范围延后。构建、签装、用例及回收见[验证工程](../../spikes/p1-t2/README.md)。质量判定沿用 [P0-T4](../standards/QUALITY_BENCHMARKS.md#p1-t2-音频与路由用例)。
+
+基线使用 Flutter 3.44.0、`media_kit 1.2.6` 及官方 `media_kit_libs_ios_audio 1.1.4`。后者的发布包 Makefile 指向 Darwin `v0.6.0` 的 `ios-universal-audio-default`，归档 SHA‑256 为 `8b8de92dc5482b8950c18bce6b8fa90204fd15af18f371acc9f5be07a4234e49`。上游构建锁列出 mpv `0.36.0`、FFmpeg `6.0`。真机日志应另读运行时版本。此构建早于 Darwin 的会话管理跳过补丁，mpv 0.36.0 的公开直通选项没有 DSD。iOS AudioUnit 上游在开启输出时配置播放会话与输出声道，无源采样率偏好请求。这些是源码定位线索。 [Darwin 构建锁](https://github.com/media-kit/libmpv-darwin-build/blob/v0.6.0/downloads.lock) · [mpv 0.36.0 AudioUnit](https://github.com/mpv-player/mpv/blob/v0.36.0/audio/out/ao_audiounit.m) · [mpv 0.36.0 选项](https://github.com/mpv-player/mpv/blob/v0.36.0/DOCS/man/options.rst)
+
+### 已回收的本机证据
+
+**样本和比较工具实测通过。** Windows 上以 FFmpeg 9.1 生成并解析 22 个合成素材。逐个验证无损解码 PCM、两段无缝素材拼回连续原件、两个坏文件无解码输出、DSF 与 DoP 载体规格、DoP 标志和逐声道载荷。24 位 WAV 原件及无缝连续原件通过比较器的阳性对照，缺少 B 段、在边界插入五帧、单个 24 位样值最低位变化分别被检出。结果的适用范围是合成输入和工具对照。 [样本规格与 SHA-256](p1-t2/fixtures-windows-ffmpeg-9.1.json) · [比较器对照结果](p1-t2/pcm-comparator-controls.json)
+
+**云构建、下载和校验实测通过。** 构建 2 在 macOS 15.8.2 完成 Flutter 分析及 iOS 归档，打包加密时因切换目录后仍用相对路径而失败。修正路径后构建 3 等待 macOS 15 runner，构建 4 改用 macOS 26.7.2（arm64），继续使用 Xcode 26.3、iPhoneOS SDK 26.2、Flutter 3.44.0、Dart 3.12.0 及 CocoaPods 1.17.0。样本验证、静态分析、无签名归档、动态 Mpv 框架、Runner 与 dSYM UUID 比对及加密制品上传均通过。构建 2、4 的 Mpv 二进制 SHA-256 相同。 [构建 2](https://github.com/SCUTLZH684/Fidelune/actions/runs/45835258060) · [构建 4](https://github.com/SCUTLZH684/Fidelune/actions/runs/45837212603)
+
+构建 4 下载使用 GitHub 连接器通道，Windows 传输耗时 36.633 秒。GitHub ZIP 的 SHA-256、解密后的 IPA 和 dSYM 的 SHA-256 均匹配。核对了 IPA 内应用无主签名资料、Bundle ID、构建号 4、背景音频配置以及 22 个文件的 SHA-256。Runner UUID 为 `AC37C6B7-6A5F-33E8-BB5A-514023160C9E`。包内合成素材由 FFmpeg 9.0.2 生成，四个比较用 WAV 与 Windows 参考副本逐文件一致。 [构建 4 元数据](p1-t2/build-4-info.txt) · [构建 4 样本清单](p1-t2/fixtures-build-4.json)
+
+### 真机与证据状态
+
+| 验收项 | 状态 | 判定依据 |
+| --- | --- | --- |
+| iPhone 通过 USB 识别 | 实测通过 | Windows 使用 P1-T1 的 pymobiledevice3 11.64.0 读取型号和系统版本。 |
+| P1-T2 签装与启动 | 尚未验证 | 已校验未签名构建 4，待匹配 iPhone 实际安装、启动及应用日志。 |
+| 有线 FLAC 阶梯与 WAV/ALAC/MP3/AAC、跨规格与声道切换 | 尚未验证 | 逐轨回收引擎、会话和 DAC 证据。 |
+| 扬声器格式、采样率、切换与听感 | 尚未验证 | 使用同一输入对照会话、路由和声音。 |
+| DSD/DoP | 尚未验证 | DSF 默认、请求直通、预封装 DoP 对照三项分别记录表现。 |
+| 应用样值及同规格无缝 | 尚未验证 | 以同包文件回读比较引擎 PCM。硬件实际无缝和瞬态另取独立输出证据。 |
+| 背景、锁屏、系统媒体命令、来电、闹钟、热插拔与四小时长播 | 尚未验证 | 日志配合进度、声响和实际系统操作。 |
+| 损坏、截断、短曲及源内静音 | 尚未验证 | Windows 素材工具级验证已完成。iOS 跳过及稳定性另测。 |
+| DAC 接收的有效位深和端到端 Bit-perfect | 当前不可测 | DX5 II 显示证据对应模式与采样率。尚无独立数字捕获或等效样值校验手段。 |
+| 蓝牙 | 当前不可测 | 尚无可借测设备，后续补测。 |
+
+源文件解析、mpv 解码和引擎输出、AVAudioSession、DAC 显示、独立样值测量分别归档。引擎报告的样本容器格式与有效位深分别取证。无值、初始空闲和中断状态不填作实际正在输出的规格。只在原版实现有明确失败证据后，按 [G1 的备选顺序](../research/TECH_STACK_COMPARISON.md#mpv-的重采样与-avaudiosession)定位并复测。
