@@ -78,6 +78,17 @@ import UIKit
         try session.setActive(true)
         record(["event": "session-reactivated", "session": snapshot()])
         reply(nil)
+      case "preferUsbRate":
+        guard let requestedHz = (args["hz"] as? NSNumber)?.doubleValue,
+              session.currentRoute.outputs.contains(where: { $0.portType == .usbAudio }) else {
+          record(["event": "session-rate-request-unavailable", "session": snapshot()])
+          reply(FlutterError(code: "usb_audio_required", message: "请先连接 USB DAC", details: nil))
+          return
+        }
+        try session.setCategory(.playback, mode: .moviePlayback, options: [])
+        try session.setPreferredSampleRate(requestedHz)
+        record(["event": "session-rate-request", "requestedHz": requestedHz, "session": snapshot()])
+        reply(nil)
       default:
         reply(FlutterMethodNotImplemented)
       }

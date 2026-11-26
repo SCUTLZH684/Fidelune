@@ -29,6 +29,7 @@ const suites = <String, List<String>>{
   '无缝 A → B': ['gap-a.wav', 'gap-b.wav'],
   'DSF': ['dsd64.dsf'],
   '已封装 DoP': ['dop64.wav'],
+  '手动切歌同规格': ['flac48000.flac', 'wav24.wav'],
   'PCM 24 源样值回读': ['wav24.wav'],
   'PCM A → B 边界回读': ['gap-a.wav', 'gap-b.wav'],
   '系统控制 / 循环': [
@@ -39,6 +40,13 @@ const suites = <String, List<String>>{
 const captures = {
   'PCM 24 源样值回读': 'p1t2-pcm24.wav',
   'PCM A → B 边界回读': 'p1t2-gap.wav',
+};
+
+const usbTrials = {
+  '请求 44.1 kHz': ('flac44100.flac', 44100),
+  '请求 96 kHz': ('flac96000.flac', 96000),
+  '请求 192 kHz': ('flac192000.flac', 192000),
+  '请求 176.4 kHz / DoP': ('dop64.wav', 176400),
 };
 
 class AudioProbe extends StatefulWidget {
@@ -64,7 +72,8 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
   var gapless = '';
   var defaultGapless = '';
   var defaultAo = '';
-  var defaultAudioFormat = '';
+  var captureOutputSelected = false;
+  var usbTrialStarted = false;
   var requestDop = false;
   var shuffle = false;
   var interrupted = false;
@@ -109,7 +118,11 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
   Future<void> prepare() async {
     try {
       assetDirectory = await bridge.invokeMethod<String>('assetDirectory');
-      for (final name in suites.values.expand((names) => names).toSet()) {
+      final files = {
+        ...suites.values.expand((names) => names),
+        ...usbTrials.values.map((trial) => trial.$1),
+      };
+      for (final name in files) {
         final asset = await rootBundle.load('fixtures/$name');
         final file = File('$assetDirectory/$name');
         await file.writeAsBytes(asset.buffer.asUint8List(asset.offsetInBytes, asset.lengthInBytes));
@@ -122,7 +135,9 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
       }
       defaultGapless = await mpv.getProperty('options/gapless-audio');
       defaultAo = await mpv.getProperty('options/ao');
-      defaultAudioFormat = await mpv.getProperty('options/audio-format');
+      // The bundled test files are local. media_kit's on-disk demux cache
+      // failed to open on the first iPhone run.
+      await mpv.setProperty('options/cache-on-disk', 'no');
       await snapshot('initialized');
       if (mounted) setState(() => prepared = true);
     } catch (error) {
@@ -153,7 +168,7 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
       'audio-out-params/samplerate', 'audio-out-params/format',
       'audio-out-params/channels', 'af', 'options/audio-samplerate',
       'options/gapless-audio', 'options/audio-spdif', 'options/audiounit-skip-session-management',
-      'options/ao', 'options/audio-format',
+      'options/ao', 'options/audio-format', 'options/cache-on-disk',
       'volume', 'speed', 'pause', 'time-pos',
     ]) {
       final value = await mpv.getProperty(key);
@@ -195,6 +210,9 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
 
   Future<void> runSuite(String name) async {
     if (!prepared || busy) return;
+    final trial = usbTrials[name];
+    if (trial == null && usbTrialStarted) return;
+    final tracks = trial == null ? suites[name]! : [trial.$1];
     setState(() => busy = true);
     try {
       await player.stop();
@@ -202,34 +220,50 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
       shuffle = false;
       await player.setShuffle(false);
       await player.setPlaylistMode(name == '系统控制 / 循环' ? PlaylistMode.loop : PlaylistMode.none);
-      await mpv.setProperty('options/gapless-audio', gapless.isEmpty ? defaultGapless : gapless);
+      final selectedGapless = gapless.isEmpty ? defaultGapless : gapless;
+      if (await mpv.getProperty('options/gapless-audio') != selectedGapless) {
+        await mpv.setProperty('options/gapless-audio', selectedGapless);
+      }
       final capture = captures[name];
       if (capture != null) {
         final path = await bridge.invokeMethod<String>('capturePath', capture);
         await mpv.setProperty('options/ao-pcm-file', path!);
-        await mpv.setProperty('options/audio-format', capture == 'p1t2-pcm24.wav' ? 's32' : 's16');
         await mpv.setProperty('options/ao', 'pcm');
         if (await mpv.getProperty('options/ao') != 'pcm') {
           throw StateError('mpv refused the PCM file output');
         }
-      } else {
+        captureOutputSelected = true;
+      } else if (captureOutputSelected) {
         await mpv.setProperty('options/ao', defaultAo);
-        await mpv.setProperty('options/audio-format', defaultAudioFormat);
+        if (await mpv.getProperty('options/ao') != defaultAo) {
+          throw StateError('mpv refused to restore its original audio output selection');
+        }
+        captureOutputSelected = false;
       }
       final passthrough = name == 'DSF' && requestDop;
-      await mpv.setProperty('options/audio-spdif', passthrough ? 'dsd' : '');
+      final spdif = passthrough ? 'dsd' : '';
+      if (await mpv.getProperty('options/audio-spdif') != spdif) {
+        await mpv.setProperty('options/audio-spdif', spdif);
+      }
+      if (trial != null) {
+        usbTrialStarted = true;
+        await bridge.invokeMethod<void>('preferUsbRate', {'hz': trial.$2});
+      }
       await record('suite-start', {
         'requestedGapless': gapless.isEmpty ? null : gapless,
         'requestedDsdPassthrough': passthrough,
         'captureFile': capture,
-        'tracks': suites[name],
+        'requestedSessionHz': trial?.$2,
+        'tracks': tracks,
       });
-      final media = suites[name]!.map((file) => Media(
+      final media = tracks.map((file) => Media(
         assets[file]!.uri.toFilePath(), extras: {'name': file},
       )).toList();
       await player.open(Playlist(media));
     } catch (error) {
-      await record('suite-error', {'message': redact(error.toString())});
+      final message = redact(error.toString());
+      if (mounted) setState(() => details = message);
+      await record('suite-error', {'message': message});
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -320,7 +354,10 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
         Text(details),
         Wrap(spacing: 8, children: [
           for (final name in suites.keys)
-            OutlinedButton(onPressed: prepared && !busy ? () => runSuite(name) : null, child: Text(name)),
+            OutlinedButton(
+              onPressed: prepared && !busy && !usbTrialStarted ? () => runSuite(name) : null,
+              child: Text(name),
+            ),
         ]),
         Wrap(spacing: 8, children: [
           for (final entry in {
@@ -346,6 +383,11 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
           onChanged: !prepared || busy ? null : (value) => setState(() => requestDop = value),
         ),
         const Text('扬声器或 DAC 先调低音量。DAC 屏幕读数另记。'),
+        const Text('USB 会话对照。开始后需退出 App 重开才能再做原版默认组。'),
+        Wrap(spacing: 8, children: [
+          for (final name in usbTrials.keys)
+            OutlinedButton(onPressed: prepared && !busy ? () => runSuite(name) : null, child: Text(name)),
+        ]),
       ]),
     );
   }
