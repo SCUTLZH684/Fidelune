@@ -6,7 +6,7 @@
 
 1. 在 Windows 从 [P1-T2 Actions](https://github.com/SCUTLZH684/Fidelune/actions/workflows/p1-t2-ios.yml) 下载对应构建。解包、解密后，用 `Get-FileHash` 比对 IPA 的 SHA-256 与 `build-info.txt`。保留构建号及对应符号。
 2. 用 P1-T1 的 Sideloadly、免费 Apple 账号、默认 Bundle ID 和 USB 安装 IPA。连接并解锁 iPhone，打开 **Fidelune P1-T2**。等「选择测试组」出现。
-3. 打开 USB 诊断，命令见下文。DAC 和电脑都需要接同一手机时，使用已验证的 USB 集线器，或在测试后接回电脑读取文件。连接 USB DAC 前先将输出调到舒适的低音量。
+3. 打开 USB 诊断，命令见下文。DAC 和电脑都需要接同一手机时，使用已验证的 USB 集线器，或在测试后接回电脑读取文件。连接 DAC 后先调低 DX5 II 或耳放的监听音量。做 DoP 对照时保留引擎 100% 音量，若 iPhone 的 USB 路由允许数字音量控制，使用其满刻度并记录。监听音量继续由 DX5 II 或耳放控制。
 
 公开 CI 的 IPA 和符号使用 QA 公钥加密，供本机签装验证。使用对应本机私钥运行以下命令。私钥及解密后的制品保存在本机 QA 目录。
 
