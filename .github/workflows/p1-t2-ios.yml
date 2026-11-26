@@ -1,0 +1,103 @@
+name: P1-T2 unsigned iOS audio probe
+
+on:
+  push:
+    branches: [main, codex/p1-t2]
+    paths:
+      - 'spikes/p1-t2/**'
+      - '.github/workflows/p1-t2-ios.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: spikes/p1-t2
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          flutter-version: '3.44.0'
+      - name: Generate and verify audio fixtures
+        run: |
+          command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null || brew install ffmpeg
+          python3 tools/fixtures.py
+      - name: Resolve Flutter packages and analyze
+        run: |
+          flutter config --no-enable-swift-package-manager
+          flutter pub get
+          flutter analyze --no-pub
+      - name: Archive without signing
+        run: flutter build ipa --release --no-codesign --no-pub --build-number "$BUILD_NUMBER"
+      - name: Verify and package IPA and matching symbols
+        run: |
+          archive=build/ios/archive/Runner.xcarchive
+          app="$archive/Products/Applications/Runner.app"
+          dsym="$archive/dSYMs/Runner.app.dSYM"
+          out="$RUNNER_TEMP/p1t2"
+          mkdir -p "$out/Payload"
+          test ! -e "$app/embedded.mobileprovision"
+          if codesign --display "$app/Runner" 2>/dev/null; then
+            echo "Unexpected signature on Runner"
+            exit 1
+          fi
+          test "$(lipo -archs "$app/Runner")" = arm64
+          test "$(plutil -extract CFBundleIdentifier raw "$app/Info.plist")" = io.github.scutlzh684.fideluneP1t2
+          test "$(plutil -extract CFBundleVersion raw "$app/Info.plist")" = "$BUILD_NUMBER"
+          test "$(plutil -extract UIBackgroundModes.0 raw "$app/Info.plist")" = audio
+          test -d "$app/Frameworks/Mpv.framework"
+          test "$(lipo -archs "$app/Frameworks/Mpv.framework/Mpv")" = arm64
+          runner_uuid="$(dwarfdump --uuid "$app/Runner" | cut -d ' ' -f 2)"
+          test -n "$runner_uuid"
+          test "$(dwarfdump --uuid "$dsym" | cut -d ' ' -f 2)" = "$runner_uuid"
+          ditto "$app" "$out/Payload/Runner.app"
+          ditto -c -k --keepParent "$out/Payload" "$out/fidelune-p1t2-unsigned.ipa"
+          ditto -c -k --keepParent "$archive/dSYMs" "$out/fidelune-p1t2-dsyms.zip"
+          cp fixtures/manifest.json "$out/fixtures-manifest.json"
+          cp pubspec.lock "$out/pubspec.lock"
+          cp ios/Podfile.lock "$out/Podfile.lock"
+          {
+            printf 'commit=%s\nrunner_image=%s %s\nbuild=release %s\n' "$GITHUB_SHA" "$ImageOS" "$ImageVersion" "$BUILD_NUMBER"
+            sw_vers
+            uname -m
+            xcodebuild -version
+            xcrun --sdk iphoneos --show-sdk-version
+            flutter --version
+            pod --version
+            plutil -extract MinimumOSVersion raw "$app/Info.plist"
+            printf 'runner_uuid=%s\n' "$runner_uuid"
+            otool -L "$app/Frameworks/Mpv.framework/Mpv"
+            shasum -a 256 "$app/Frameworks/Mpv.framework/Mpv"
+            cd "$out"
+            wc -c fidelune-p1t2-unsigned.ipa
+            shasum -a 256 fidelune-p1t2-unsigned.ipa fidelune-p1t2-dsyms.zip fixtures-manifest.json pubspec.lock Podfile.lock
+          } > "$out/build-info.txt"
+          cat "$out/build-info.txt"
+          # Keep the native bundle for owner's hardware QA while its redistribution audit is open.
+          openssl_bin="$(brew --prefix openssl@3)/bin/openssl"
+          "$openssl_bin" cms -encrypt -binary -aes256 -outform DER \
+            -in "$out/fidelune-p1t2-unsigned.ipa" -out "$out/fidelune-p1t2-unsigned.ipa.cms" tools/qa-artifact-recipient.pem
+          "$openssl_bin" cms -encrypt -binary -aes256 -outform DER \
+            -in "$out/fidelune-p1t2-dsyms.zip" -out "$out/fidelune-p1t2-dsyms.zip.cms" tools/qa-artifact-recipient.pem
+      - name: Upload encrypted QA bundle and build metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: p1-t2-ios-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/p1t2/*.cms
+            ${{ runner.temp }}/p1t2/build-info.txt
+            ${{ runner.temp }}/p1t2/fixtures-manifest.json
+            ${{ runner.temp }}/p1t2/pubspec.lock
+            ${{ runner.temp }}/p1t2/Podfile.lock
+          if-no-files-found: error
+          retention-days: 14
