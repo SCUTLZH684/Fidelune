@@ -18,6 +18,7 @@ import UIKit
     private var methodChannel: FlutterMethodChannel?
     private var eventSink: FlutterEventSink?
     private var fixturesDirectoryURL: URL?
+    private let fixturesLock = NSLock()
 
     func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
         GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
@@ -28,7 +29,15 @@ import UIKit
         )
         coordinator.listener = self
         _ = logger.prepareStorage()
-        _ = coordinator.initializeEngine()
+        logger.log(
+            event: "app-launch",
+            category: "lifecycle",
+            message: "Implicit Flutter engine initialized (build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") ?? "?"))",
+            fields: [
+                "build": "\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") ?? "?")",
+                "ios": UIDevice.current.systemVersion,
+            ]
+        )
 
         let messenger = engineBridge.applicationRegistrar.messenger()
         let method = FlutterMethodChannel(name: "fidelune/bass_audio", binaryMessenger: messenger)
@@ -43,6 +52,11 @@ import UIKit
 
         let events = FlutterEventChannel(name: "fidelune/bass_events", binaryMessenger: messenger)
         events.setStreamHandler(self)
+
+        // Warm up BASS engine off main thread so UIKit/Flutter first frame never waits.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            _ = self?.coordinator.initializeEngine()
+        }
     }
 
     private func handleMethodCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -212,6 +226,8 @@ import UIKit
     // MARK: - Fixtures & Local Library Helpers
 
     private func stageBundledFixtures() -> URL? {
+        fixturesLock.lock()
+        defer { fixturesLock.unlock() }
         let fm = FileManager.default
         guard let cacheBase = try? fm.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else {
             return nil

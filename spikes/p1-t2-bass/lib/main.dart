@@ -45,6 +45,7 @@ class _FideluneShellState extends State<FideluneShell> {
 
   int _tabIndex = 0;
   bool _ready = false;
+  String? _bootstrapError;
   PlaybackStateSnapshot _state = const PlaybackStateSnapshot();
   List<TrackSpec> _bundledTracks = const [];
   List<TrackSpec> _userTracks = const [];
@@ -72,16 +73,28 @@ class _FideluneShellState extends State<FideluneShell> {
   }
 
   Future<void> _bootstrap() async {
-    final res = await widget.gateway.initialize();
-    await _acceptanceController.loadPersistedState();
-    if (!mounted) return;
-    setState(() {
-      _ready = true;
-      _state = res.state;
-      _bundledTracks = res.bundledTracks;
-      _userTracks = res.userTracks;
-      _tracksByName = {for (final t in res.bundledTracks) t.fileName: t};
-    });
+    if (mounted && _bootstrapError != null) {
+      setState(() => _bootstrapError = null);
+    }
+    try {
+      final res = await widget.gateway.initialize().timeout(const Duration(seconds: 20));
+      await _acceptanceController.loadPersistedState();
+      if (!mounted) return;
+      setState(() {
+        _ready = true;
+        _bootstrapError = null;
+        _state = res.state;
+        _bundledTracks = res.bundledTracks;
+        _userTracks = res.userTracks;
+        _tracksByName = {for (final t in res.bundledTracks) t.fileName: t};
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _ready = true;
+        _bootstrapError = '原生音频引擎初始化异常：$e';
+      });
+    }
   }
 
   Future<void> _refreshUserTracks() async {
@@ -158,6 +171,20 @@ class _FideluneShellState extends State<FideluneShell> {
             )
           : Column(
               children: [
+                if (_bootstrapError != null)
+                  MaterialBanner(
+                    backgroundColor: FideluneColors.coral.withValues(alpha: 0.16),
+                    content: Text(_bootstrapError!, style: const TextStyle(fontSize: 12.5)),
+                    actions: [
+                      TextButton(
+                        onPressed: () {
+                          setState(() => _ready = false);
+                          _bootstrap();
+                        },
+                        child: const Text('重试'),
+                      ),
+                    ],
+                  ),
                 Expanded(child: IndexedStack(index: _tabIndex, children: screens)),
                 MiniPlayerBar(
                   state: _state,

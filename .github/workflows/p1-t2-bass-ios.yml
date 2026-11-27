@@ -136,6 +136,7 @@ jobs:
             test "$(plutil -extract UIBackgroundModes.0 raw "$app/Info.plist")" = audio
             test "$(plutil -extract UIFileSharingEnabled raw "$app/Info.plist")" = true -o "$(plutil -extract UIFileSharingEnabled raw "$app/Info.plist")" = 1
             test "$(plutil -extract LSSupportsOpeningDocumentsInPlace raw "$app/Info.plist")" = true -o "$(plutil -extract LSSupportsOpeningDocumentsInPlace raw "$app/Info.plist")" = 1
+            test "$(plutil -extract UIApplicationSceneManifest.UISceneConfigurations.UIWindowSceneSessionRoleApplication.0.UISceneDelegateClassName raw "$app/Info.plist")" = Runner.SceneDelegate
 
             for fw in bass bassmix bassdsd bassflac basswv bassape bassopus; do
               test -d "$app/Frameworks/${fw}.framework"
@@ -183,7 +184,7 @@ jobs:
             cat "$out/build-info.txt"
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          info_line="$(tr '\n' ' ' < "$out/build-info.txt" | cut -c1-1200)"
+          info_line="$(tail -n 10 "$out/build-info.txt" | tr '\n' ' ' | cut -c1-1200)"
           echo "::notice title=Build Info #${BUILD_NUMBER}::${info_line}"
 
       - name: Upload encrypted QA bundle and build metadata

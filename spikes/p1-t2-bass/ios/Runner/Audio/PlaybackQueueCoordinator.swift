@@ -39,6 +39,7 @@ final class PlaybackQueueCoordinator {
 
     private var consecutiveFailureCount = 0
     private var lastPositionPersistTime: Date = .distantPast
+    private let initLock = NSLock()
 
     init(
         backend: AudioPlaybackBackend,
@@ -61,6 +62,8 @@ final class PlaybackQueueCoordinator {
     }
 
     func initializeEngine() -> Bool {
+        initLock.lock()
+        defer { initLock.unlock() }
         let ok = backend.initialize()
         nowPlaying.registerRemoteCommands()
         emitState()
