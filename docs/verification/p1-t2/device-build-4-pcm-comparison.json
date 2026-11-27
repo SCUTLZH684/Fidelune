@@ -1,0 +1,37 @@
+{
+  "build": 4,
+  "ios": "27.2.1",
+  "output": "libmpv ao=pcm",
+  "samples": {
+    "pcm24": {
+      "file": "p1t2-pcm24.wav",
+      "bytes": 1536068,
+      "file_sha256": "639a941f48dd1755734ce58d86f91177aa49b5319f0a9d96d496c5d0820ed738",
+      "reference_hz": 48000,
+      "capture_hz": 48000,
+      "reference_channels": 2,
+      "capture_channels": 2,
+      "reference_frames": 192000,
+      "capture_frames": 192000,
+      "reference_s32le_sha256": "3fd41c4fd14b28fc8c684c8db65fffe59eaafe15a25a6755c5ad8c76e5204806",
+      "capture_s32le_sha256": "3fd41c4fd14b28fc8c684c8db65fffe59eaafe15a25a6755c5ad8c76e5204806",
+      "exact_same_frames_and_samples": true
+    },
+    "gap": {
+      "file": "p1t2-gap.wav",
+      "bytes": 352868,
+      "file_sha256": "554e3016bd9078251f0438a145fc6025fe6646da4845f012d6ed5f4a6d809987",
+      "reference_hz": 44100,
+      "capture_hz": 44100,
+      "reference_channels": 2,
+      "capture_channels": 2,
+      "reference_frames": 88200,
+      "capture_frames": 88200,
+      "reference_s32le_sha256": "25066c5e8ce344d1058708df1842829a53140ea389994d3308f6a430667b3563",
+      "capture_s32le_sha256": "25066c5e8ce344d1058708df1842829a53140ea389994d3308f6a430667b3563",
+      "exact_same_frames_and_samples": true,
+      "boundary_anchors_delta_frames": 0,
+      "boundary_samples_match": true
+    }
+  }
+}

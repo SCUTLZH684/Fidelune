@@ -1,0 +1,31 @@
+{
+  "scope": "Original DoP/DSF assets recovered from unsigned build 7. The spectral check uses Windows FFmpeg and the interval 0.5 to 1.5 s.",
+  "build": 7,
+  "asset_sha256": {
+    "dop64.wav": "25594f8f5b8f7438f828215cf247de1088bad504c849af0c1c54c4e49c26a1ea",
+    "dsd64.dsf": "b2860a2f193bdd508efee131596a6651f27ffcbd01a22d9eb99915c79fe7822e"
+  },
+  "dop_carrier_hz": 176400,
+  "dop_sample_width_bits": 24,
+  "carrier_frames_checked": 529200,
+  "marker_bytes_checked": 1058400,
+  "markers_and_each_channel_dsd_payload_match": true,
+  "offline_decoded_channels": [
+    {
+      "channel": 1,
+      "known_tone_hz": 431,
+      "rms": 0.04949547567972478,
+      "tone_peak_amplitude": 0.06996458222817983,
+      "other_tone_peak_amplitude": 1.5071215581871535e-08,
+      "dsd_payload_sha256": "5de0f5322cd9757c425e6daf5b0bb6c457da1fe8fcce2960d44975ff7f976dfc"
+    },
+    {
+      "channel": 2,
+      "known_tone_hz": 553,
+      "rms": 0.04949842030873675,
+      "tone_peak_amplitude": 0.06996545940816314,
+      "other_tone_peak_amplitude": 8.398002479593212e-18,
+      "dsd_payload_sha256": "7171192aa1a1e4233367033424a237c0ca1a187154ae7e420223000ec43bce1e"
+    }
+  ]
+}

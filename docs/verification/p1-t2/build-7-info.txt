@@ -1,0 +1,36 @@
+commit=cc6e890af57a049ab5a7c80c1b75f0ba3b9c1cc9
+runner_image=macos26 20261123.0526.1
+build=release 7
+ProductName:		macOS
+ProductVersion:		26.7.2
+BuildVersion:		25G332
+arm64
+Xcode 26.3
+Build version 17C529
+26.2
+Flutter 3.44.0 • channel stable • https://github.com/flutter/flutter.git
+Framework • revision 559ffa3f75 (7 months ago) • 2026-05-15 14:13:13 -0700
+Engine • hash fcf463a2242790d1fdcd9d044f533080f5022e18 (revision 4c525dac5e) (6 months ago) • 2026-05-15 19:00:04.000Z
+Tools • Dart 3.12.0 • DevTools 2.57.0
+1.17.0
+14.0
+runner_uuid=138DC7EE-58E9-3E6E-8A27-BC26D46F77A4
+build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app/Frameworks/Mpv.framework/Mpv:
+	@rpath/Mpv.framework/Mpv (compatibility version 2.0.0, current version 2.0.0)
+	@rpath/Avcodec.framework/Avcodec (compatibility version 60.0.0, current version 60.3.100)
+	@rpath/Avfilter.framework/Avfilter (compatibility version 9.0.0, current version 9.3.100)
+	@rpath/Avformat.framework/Avformat (compatibility version 60.0.0, current version 60.3.100)
+	@rpath/Avutil.framework/Avutil (compatibility version 58.0.0, current version 58.2.100)
+	@rpath/Swresample.framework/Swresample (compatibility version 4.0.0, current version 4.10.100)
+	@rpath/Swscale.framework/Swscale (compatibility version 7.0.0, current version 7.1.100)
+	/usr/lib/libiconv.2.dylib (compatibility version 7.0.0, current version 7.0.0)
+	/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1319.100.3)
+	/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox (compatibility version 1.0.0, current version 1000.0.0)
+	/usr/lib/libobjc.A.dylib (compatibility version 1.0.0, current version 228.0.0)
+592a8c15a3db14655bf72da05bc51c8278f5ddacc857e78a2bb16bf4bf06efe3  build/ios/archive/Runner.xcarchive/Products/Applications/Runner.app/Frameworks/Mpv.framework/Mpv
+ 19993271 fidelune-p1t2-unsigned.ipa
+3a1773519b95cb2c861d7db517b0ae7a612680b2ab86a436402ba59ff43bfe33  fidelune-p1t2-unsigned.ipa
+e3cde95966a9bbf57472f4d58ddf903767f89aec1b9be8b11747dab67e3c6633  fidelune-p1t2-dsyms.zip
+3453738b9e6951ecd76db1a658f529f2fd9462a62ec6ae88aa9da65ed0346492  fixtures-manifest.json
+53d386713ef1f0798a9854395e572c20bee116b4efbb6499948ed19c3fd3acc2  pubspec.lock
+9e83300649c1a33b6a00137dc596b78e8d881d1d70e40092f41b2fcecc246fdb  Podfile.lock
