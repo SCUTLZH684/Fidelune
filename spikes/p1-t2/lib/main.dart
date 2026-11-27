@@ -78,6 +78,7 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
   var shuffle = false;
   var interrupted = false;
   var resumeAfterInterruption = false;
+  var pausedForRouteRemoval = false;
   var lastInfoSecond = -1;
   var details = '';
   var commandId = 0;
@@ -213,9 +214,15 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
     final trial = usbTrials[name];
     if (trial == null && usbTrialStarted) return;
     final tracks = trial == null ? suites[name]! : [trial.$1];
+    ++commandId;
     setState(() => busy = true);
     try {
       await player.stop();
+      // A removed route can deliver a begin notification without a matching end.
+      // A new suite is an explicit user request, with its own interruption state.
+      interrupted = false;
+      resumeAfterInterruption = false;
+      pausedForRouteRemoval = false;
       suite = name;
       shuffle = false;
       await player.setShuffle(false);
@@ -273,6 +280,16 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
     final id = ++commandId;
     if (interrupted && action != 'mark') resumeAfterInterruption = false;
     await record('command', {'id': id, 'origin': origin, 'action': action, 'seconds': seconds, 'track': track});
+    if (pausedForRouteRemoval && (action == 'play' || action == 'toggle' && !player.state.playing)) {
+      try {
+        await bridge.invokeMethod<void>('reactivate');
+      } on PlatformException catch (error) {
+        await record('command-error', {'id': id, 'message': error.code});
+        return;
+      }
+      pausedForRouteRemoval = false;
+      interrupted = false;
+    }
     switch (action) {
       case 'play': await player.play();
       case 'pause': await player.pause();
@@ -303,20 +320,35 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
         await command(data['command'] as String, origin: 'system', seconds: (data['seconds'] as num?)?.toDouble());
       case 'unplug':
         resumeAfterInterruption = false;
+        pausedForRouteRemoval = true;
         await player.pause();
         await snapshot('paused-on-unplug');
       case 'interruption':
         if (data['began'] == true) {
-          if (!interrupted) resumeAfterInterruption = player.state.playing;
+          if (!interrupted) {
+            resumeAfterInterruption = !pausedForRouteRemoval && player.state.playing;
+          }
           interrupted = true;
           await player.pause();
         } else {
-          final resume = interrupted && resumeAfterInterruption && data['resume'] == true;
+          final resume = !pausedForRouteRemoval && interrupted && resumeAfterInterruption &&
+              data['resume'] == true;
+          final lastCommand = commandId;
           interrupted = false;
           resumeAfterInterruption = false;
-          if (resume) {
-            await bridge.invokeMethod<void>('reactivate');
-            if (!interrupted) await player.play();
+          await record('interruption-resume-decision', {
+            'shouldResume': data['resume'], 'willResume': resume,
+            'routeRemovalPending': pausedForRouteRemoval,
+          });
+          if (resume && commandId == lastCommand && !pausedForRouteRemoval && !interrupted) {
+            try {
+              await bridge.invokeMethod<void>('reactivate');
+              if (commandId == lastCommand && !pausedForRouteRemoval && !interrupted) {
+                await player.play();
+              }
+            } on PlatformException catch (error) {
+              await record('interruption-resume-error', {'message': error.code});
+            }
           }
         }
         refreshState();
