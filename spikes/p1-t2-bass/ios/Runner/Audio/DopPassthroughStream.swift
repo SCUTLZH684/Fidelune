@@ -332,10 +332,6 @@ final class DopPassthroughStream {
     }
 }
 
-private extension DopPassthroughStream {
-    func initIfPlaceholder() {}
-}
-
 private func dopStreamCallback(
     handle: HSTREAM,
     buffer: UnsafeMutableRawPointer?,
