@@ -3,26 +3,31 @@
 **交付分支**：`feat/p1-t2-bass`  
 **对应工程目录**：[spikes/p1-t2-bass/](../../spikes/p1-t2-bass/)  
 **使用说明**：[spikes/p1-t2-bass/README.md](../../spikes/p1-t2-bass/README.md)  
-**最新全绿 CI 构建**：[Actions Run #45983078555 (Build #6)](https://github.com/SCUTLZH684/Fidelune/actions/runs/45983078555)（Job [140451653623](https://github.com/SCUTLZH684/Fidelune/actions/runs/45983078555/job/140451653623)，Commit `0d70fb8df7cada85b8a54a739cb68800a9710dce`）  
+**最新全绿 CI 构建**：[Actions Run #45998526234 (Build #7)](https://github.com/SCUTLZH684/Fidelune/actions/runs/45998526234)（Job [140503935290](https://github.com/SCUTLZH684/Fidelune/actions/runs/45998526234/job/140503935290)，Commit `035186f9fe44ab4161d8db9c751f13a6b4fd0d4e`）  
+**真机故障基线保留**：Build #6（[Actions Run #45983078555](https://github.com/SCUTLZH684/Fidelune/actions/runs/45983078555)，Commit `0d70fb8df7cada85b8a54a739cb68800a9710dce`）安装包与 iPhone 17 现场诊断日志已保留于 `%LOCALAPPDATA%\Fidelune\P1-T2-BASS\build-6\`、`device\build-6\` 及桌面 `Fidelune-BASS-Build6.ipa`。  
 **基线保护情况**：已确认 `git diff codex/p1-t2 -- spikes/p1-t2 .github/workflows/p1-t2-ios.yml docs/verification/p1-t2` 输出为空，原 `libmpv` 实验代码、CI 与验收记录未做任何改动；`docs/research/` 下两份未跟踪 HTML 调研文件保持原样未修改。
 
 ---
 
 ## 1. 一句话总结与真机接收指南
 
-本轮在保留原 `libmpv` 实验的前提下，完成了独立于原目录的 **BASS 完整 iOS Hi-Res 音频引擎、USB DAC 会话管理与集中真机验收套件**，已在 GitHub Actions `macos-26` + Xcode `26.3` + Flutter `3.44.0` 上完成从公式校验下载、FFmpeg 样本生成与位验证、Flutter 分析与控件测试、**iOS Simulator 真实 BASS 二进制 XCTests（7 项全过，含 9 项机内自检）** 到 **arm64 无签名 IPA 归档、7 个框架嵌入检验、dSYM UUID 匹配校验、OpenSSL CMS 加密与 Artifact 上传** 全链路全绿验证。
+本轮在保留原 `libmpv` 实验的前提下，完成了独立于原目录的 **BASS 完整 iOS Hi-Res 音频引擎、USB DAC 会话管理与集中真机验收套件**，已在 GitHub Actions `macos-26` + Xcode `26.3` + Flutter `3.44.0` 上完成从公式校验下载、FFmpeg 样本生成与位验证、Flutter 分析与控件测试、**iOS Simulator 真实 BASS 二进制 XCTests（7 项全过，含 9 项机内自检）** 到 **arm64 无签名 IPA 归档、7 个框架嵌入检验、`Runner.SceneDelegate` 场景类断言、dSYM UUID 匹配校验、OpenSSL CMS 加密与 Artifact 上传** 全链路全绿验证。
 
-### Windows 端一键下载、解密与核验 IPA
+### Windows 端 IPA 交付结果与一键重验说明
 
-本机已核验存在 QA 私钥（`%LOCALAPPDATA%\Fidelune\P1-T2\qa-artifact-key.pem`，2484 字节）与 `openssl.exe`（`C:\Program Files\Git\usr\bin\openssl.exe`）。因 GitHub Actions Artifact 下载接口需要已登录会话授权，请按以下 2 步拉取并解密直接侧载：
+本机已使用 QA 私钥（`%LOCALAPPDATA%\Fidelune\P1-T2\qa-artifact-key.pem`）完成 **Build #7** 产物解密与完整性核验，并已将可直接拖入 **Sideloadly** 的无签名 IPA 放置到桌面：
 
-1. 在浏览器登录 GitHub 后打开构建页面：[Run #45983078555](https://github.com/SCUTLZH684/Fidelune/actions/runs/45983078555)，下载底部 Artifact **`p1-t2-bass-ios-6`**，解压至 `%LOCALAPPDATA%\Fidelune\P1-T2-BASS\build-6\`。
-2. 在 PowerShell 运行解密与校验（不碰原 `P1-T2` 制品目录）：
+- **桌面安装包**：`C:\Users\l\OneDrive\Desktop\Fidelune-BASS-Build7.ipa`
+- **文件大小**：`19,381,129` 字节
+- **SHA-256**：`5b0fd7e640c8ed0fafedf2dfb0c4b1cd50c8eedb9bce04e63642aae622d000d6`（与 `build-info.txt` 一致）
+- **保留的 Build #6 基线**：`C:\Users\l\OneDrive\Desktop\Fidelune-BASS-Build6.ipa`（`19,378,167` 字节，SHA-256 `17298da5eb73e2ecc401dd5b35791b7a6d8481dcc1dc157e093ee47a91fb51d0`）
+
+如需在本地重新从 CI Artifact **`p1-t2-bass-ios-7`** 解密核验，可将压缩包解压至 `%LOCALAPPDATA%\Fidelune\P1-T2-BASS\build-7\` 后运行：
 
 ```powershell
 $keyFile  = Join-Path $env:LOCALAPPDATA 'Fidelune\P1-T2\qa-artifact-key.pem'
 $openssl  = 'C:\Program Files\Git\usr\bin\openssl.exe'
-$buildDir = Join-Path $env:LOCALAPPDATA 'Fidelune\P1-T2-BASS\build-6'
+$buildDir = Join-Path $env:LOCALAPPDATA 'Fidelune\P1-T2-BASS\build-7'
 Set-Location $buildDir
 
 & $openssl cms -decrypt -binary -inform DER `
@@ -39,7 +44,7 @@ Get-FileHash -Algorithm SHA256 .\fidelune-bass-unsigned.ipa, .\fidelune-bass-dsy
 Get-Content .\build-info.txt
 ```
 
-3. 确认输出 SHA-256 与 `build-info.txt` 一致后，用 **Sideloadly**（默认 Bundle ID `io.github.scutlzh684.fideluneBass`、免费个人 Apple ID、USB 数据线）侧载安装 `fidelune-bass-unsigned.ipa` 至 iPhone 17，并在手机「设置 → 通用 → VPN 与设备管理」信任证书。
+直接用 **Sideloadly**（默认 Bundle ID `io.github.scutlzh684.fideluneBass`、免费个人 Apple ID、USB 数据线）侧载安装桌面 `Fidelune-BASS-Build7.ipa` 至 iPhone 17，并在手机「设置 → 通用 → VPN 与设备管理」信任证书即可开始启动与集中验收。
 
 ---
 
@@ -112,7 +117,7 @@ Get-Content .\build-info.txt
 
 ## 4. 自动化验证实测结果
 
-以下结果全部来自本轮实际执行的本地单元测试与 [GitHub Actions Run #45983078555](https://github.com/SCUTLZH684/Fidelune/actions/runs/45983078555)（无一跳测、无放松断言）：
+以下结果全部来自本轮实际执行的本地单元测试、[GitHub Actions Run #45983078555 (Build #6)](https://github.com/SCUTLZH684/Fidelune/actions/runs/45983078555) 以及黑屏修复后的 **[GitHub Actions Run #45998526234 (Build #7)](https://github.com/SCUTLZH684/Fidelune/actions/runs/45998526234)**（无一跳测、无放松断言）：
 
 ### 4.1 样本生成与 Python 校验工具（已通过）
 - **`python3 tools/fixtures.py`**（CI Step 5，`macos-26` + Homebrew `ffmpeg`）：
@@ -148,13 +153,39 @@ Get-Content .\build-info.txt
        - `auto_corrupt_resilience`：`invalid.flac` / `invalid-2.flac` 安全拒绝，`truncated.flac` 解码至有效尾后安全结束不崩溃
   >注：在 headless GitHub CI iOS Simulator 环境下，`BassAudioEngine.initialize()` 具备仅在 `#if targetEnvironment(simulator)` 下触发的 Device `0`（No sound）与 `BASS_ERROR_ALREADY` 兼容回退，真实硬件 `#if !targetEnvironment(simulator)` 不启用无声回退。
 
-### 4.4 Unsigned Release IPA 与符号产物校验（已通过）
-- **CI Steps 8–10**（`macos26 20261123.0526.1` / `macOS 26.7.2` `arm64` / `Xcode 26.3 17C529` / iOS SDK `26.2`）：
-  - `Runner.app` 无 `embedded.mobileprovision`、未预先代码签名、`lipo -archs` 为纯 `arm64`、`CFBundleIdentifier = io.github.scutlzh684.fideluneBass`、`CFBundleVersion = 6`、`MinimumOSVersion = 15.0`。
+### 4.4 Unsigned Release IPA 与符号产物校验（Build #7 已通过）
+- **CI Steps 8–10**（Run `#45998526234` / `macos26 20261117.0516.1` / `macOS 26.7.2` `arm64` / `Xcode 26.3 17C529` / iOS SDK `26.2`）：
+  - `Runner.app` 无 `embedded.mobileprovision`、未预先代码签名、`lipo -archs` 为纯 `arm64`、`CFBundleIdentifier = io.github.scutlzh684.fideluneBass`、`CFBundleVersion = 7`、`MinimumOSVersion = 15.0`。
+  - `UIApplicationSceneManifest.UISceneConfigurations.UIWindowSceneSessionRoleApplication[0].UISceneDelegateClassName = Runner.SceneDelegate`（CI 步骤 `plutil` 强制校验通过，本地解密 IPA `plistlib` 解析复核通过）。
   - `UIBackgroundModes[0] = audio`、`UIFileSharingEnabled = true`、`LSSupportsOpeningDocumentsInPlace = true`。
-  - 7 个 BASS 动态框架全部嵌入 `Runner.app/Frameworks/` 且 `lipo -archs` 为纯 `arm64`（部分已记录二进制 SHA-256：`bass` `649535eb220d8f3e81a4d13a8b9bd5c4be85dcc55121dbb3245e1fa3c77fb898`；`bassmix` `73e936fc8d79e9334cca936cfee3cf87743795e65272fbdef20329f1e66efe9d`；`bassdsd` `354ccbe7c265755a7906f8474db8d0b38b8e5dd2df48817f2f1f2b63195671de`；其余 4 个框架与 `.ipa` / `.zip` 完整大小与 SHA-256 见制品内 `build-info.txt`）。
-  - `Runner` 与 `Runner.app.dSYM` UUID 精确匹配：`1948E4B6-FB3A-3FD0-A0F3-AAC4130F26E4`。
-  - 已加密为 `fidelune-bass-unsigned.ipa.cms` 与 `fidelune-bass-dsyms.zip.cms` 并上传为 **`p1-t2-bass-ios-6`**。
+  - 7 个 BASS 动态框架全部嵌入 `Runner.app/Frameworks/` 且二进制 `lipo -archs` 为纯 `arm64`，本地解密 IPA 实测 SHA-256 与 `build-info.txt` 逐一匹配：
+    - `bass`: `649535eb220d8f3e81a4d13a8b9bd5c4be85dcc55121dbb3245e1fa3c77fb898`
+    - `bassmix`: `73e936fc8d79e9334cca936cfee3cf87743795e65272fbdef20329f1e66efe9d`
+    - `bassdsd`: `354ccbe7c265755a7906f8474db8d0b38b8e5dd2df48817f2f1f2b63195671de`
+    - `bassflac`: `d8efbca7ebceb54c5d6eb14b584ce931c1758163834e4c61d6bd27a7dbfac5aa`
+    - `basswv`: `0a8cd1702c75981a122ac1c28b400ade2658d10fc8ee8e3c7497939e78118115`
+    - `bassape`: `675eb704094160aa53740a608bef8ca4d4f9d49b4f73db505fde8e55d20ee53c`
+    - `bassopus`: `61a27fa4930d9f52e213f82f725dfdc2a01bb5e7ae7b901dc63674312072cf6f`
+  - `Runner` 与 `Runner.app.dSYM` UUID 精确匹配：`35D2606B-DD7F-37C6-A66D-0125689FA037`。
+  - 本地解密包校验通过（`zipfile.testzip() is None`）：
+    - `fidelune-bass-unsigned.ipa`：`19,381,129` 字节，SHA-256 `5b0fd7e640c8ed0fafedf2dfb0c4b1cd50c8eedb9bce04e63642aae622d000d6`
+    - `fidelune-bass-dsyms.zip`：`39,160,171` 字节，SHA-256 `dd4fd22b6cb8e7e7827e02d5bae0373c86a8d482cd0a6ad8e7578f425bc9a7c1`
+  - 已加密上传为 **`p1-t2-bass-ios-7`**，并复制验证通过的 IPA 至桌面 `C:\Users\l\OneDrive\Desktop\Fidelune-BASS-Build7.ipa`。
+
+### 4.5 Build #6 真机黑屏根因定位（iPhone 17 / iOS 27.2.1）与 Build #7 修复详情
+- **真机故障现象**：Build #6 通过 Sideloadly 安装到 iPhone 17（`iPhone18,3`，iOS `27.2.1`，Build `24B156`）后持续黑屏超过 60 秒（重装可稳定复现）。
+- **真机实测证据采集**（通过 USB `usbmuxd` + `pymobiledevice3` 采集并留档于 `%LOCALAPPDATA%\Fidelune\P1-T2-BASS\device\build-6\`）：
+  1. **`InstallationProxy` 应用配置快照（`user-apps.json`）**：设备上已安装 `io.github.scutlzh684.fideluneBass.YVH7RXG9RB`（`Fidelune BASS` `0.2.0` Build `6`）中，`UIApplicationSceneManifest.UISceneConfigurations.UIWindowSceneSessionRoleApplication[0].UISceneDelegateClassName` 被编译为了非法类名 **`".SceneDelegate"`**（模块名前缀为空，而可正常显示画面的 `P1-T1` 与原 `P1-T2` 均为 `"Runner.SceneDelegate"`）。
+  2. **`HouseArrest` 应用沙盒启动日志（`fidelune-bass-diagnostics.jsonl`，808 字节）**：真实记录启动时刻在 **10 ms** 内相继输出两条日志：
+     - `2026-11-27T12:04:29.482Z`：`session-startup-activated`（`route: "Speaker"`, `sampleRateHz: 48000`）
+     - `2026-11-27T12:04:29.492Z`：`bass-initialized`（`bassVersion: "0x02041203"`, `bassMixVersion: "0x02040D01"`, `deviceRateHz: 48000`, `initCode: 0`, `missingPlugins: []`, `plugins: ["bassape","bassdsd","bassflac","bassopus","basswv"]`）
+  3. **`CrashReports` 崩溃目录列表（`crash-ls.txt`）**：`2026-11-27` 当天无任何 `Runner` / `Fidelune BASS` 崩溃报告。
+- **定位结论**：7 个 BASS 动态框架及全部 5 个解码插件在真机 iOS 27.2.1 上已被 Sideloadly 正确重签加载并快速完成初始化，**根本原因**是 [Info.plist](../../spikes/p1-t2-bass/ios/Runner/Info.plist#L51) 将 `UISceneDelegateClassName` 误写为 `$(PRODUCT_BUNDLE_NAME).SceneDelegate`（构建解析为空前缀 `.SceneDelegate`），导致 UIKit 启动时无法实例化继承自 `FlutterSceneDelegate` 的 `Runner.SceneDelegate` 来创建并呈现 `UIWindow`，进程保持存活但页面永久黑屏。
+- **Build #7 修复清单（Commit `035186f9fe44ab4161d8db9c751f13a6b4fd0d4e`，未禁用任何核心音频能力）**：
+  1. [Info.plist](../../spikes/p1-t2-bass/ios/Runner/Info.plist#L51)：将 `UISceneDelegateClassName` 修正为 `$(PRODUCT_MODULE_NAME).SceneDelegate`。
+  2. [AppDelegate.swift](../../spikes/p1-t2-bass/ios/Runner/AppDelegate.swift#L21-L60) 与 [PlaybackQueueCoordinator.swift](../../spikes/p1-t2-bass/ios/Runner/Audio/PlaybackQueueCoordinator.swift#L42-L71)：补充 `app-launch` 生命周期日志、新增 `fixturesLock` 保护 `stageBundledFixtures()`、新增 `initLock` 串行化 `initializeEngine()`，并将启动期 `coordinator.initializeEngine()` 预热移至 `DispatchQueue.global(qos: .userInitiated).async` 后台执行，确保不阻塞主线程与首帧渲染。
+  3. [main.dart](../../spikes/p1-t2-bass/lib/main.dart#L75-L98)：为 `_bootstrap()` 补充 20 秒超时、`try/catch` 异常捕获及失败重试横幅（`MaterialBanner`），避免异常卡在白/黑屏或加载态。
+  4. [p1-t2-bass-ios.yml](../../.github/workflows/p1-t2-bass-ios.yml#L139)：在 CI 归档校验步骤新增 `plutil` 强制断言 `UISceneDelegateClassName = Runner.SceneDelegate`。
 
 ---
 
@@ -162,16 +193,18 @@ Get-Content .\build-info.txt
 
 严格遵循实事求是不夸大原则：**以下能力尚未在 iPhone 17（iOS 27.2.1）与 TOPPING DX5 II 物理硬件上实际运行与观察，编译通过、XCTest 与 BASSmix/FFmpeg 数字回环通过均不代表物理端到端已通过**：
 
-1. **端到端物理 USB DAC 原采样率输出与硬件 Bit-perfect**：
+1. **Build #7 真机 UI 首帧与集中验收界面展示**：
+   - 桌面 `Fidelune-BASS-Build7.ipa` 已验证内含 `UISceneDelegateClassName = "Runner.SceneDelegate"`，但尚未在物理 iPhone 17 上侧载运行以确认首屏正常渲染及无黑屏。
+2. **端到端物理 USB DAC 原采样率输出与硬件 Bit-perfect**：
    - `flac44100` ~ `flac384000`（特别是 88.2 / 176.4 / 352.8 / 384 kHz）在连接 TOPPING DX5 II 后，iOS `AVAudioSession.setPreferredSampleRate` 与 `BASS_DEVICE_FREQ | BASS_DEVICE_REINIT` 实际协同效果、DAC 前面板实显采样率读数、以及苹果 CoreAudio USB 驱动在特定采样率下是否发生隐式位深截取或限幅，**必须以真机 `D1`/`D2` 及后续外部数字抓取（如 RME/SPDIF 环回比对）为准**。
-2. **物理 DAC DoP DSD64 / DSD128 点灯与纯音听感**：
+3. **物理 DAC DoP DSD64 / DSD128 点灯与纯音听感**：
    - 尽管 BASSDSD 载波 `0x05`/`0xFA` 标记已在 Simulator 二进制层面验证 0 错误，但 iPhone USB Audio 输出路径是否完整保留最低 24-bit 无衰减/无 dither/无限幅、以及 TOPPING DX5 II 是否能真正锁定并点亮 DSD64 / DSD128（`P1`/`P2`），**待真机低音量安全门禁下实测**。
-3. **真机扬声器与 USB DAC 实际听感防爆音**：
+4. **真机扬声器与 USB DAC 实际听感防爆音**：
    - `15 ms` 软淡入淡出、`180 ms` 跨规格稳态静音窗、以及 `40 ms` `0x69` DoP 前后护帧在实际耳机/音箱上的听感是否完全消除“啪/咔”脉冲，**待 `H1` / `D2` / `P2` 真机听审**。
-4. **物理 USB 热插拔、蓝牙路由与真实来电/闹钟中断**：
+5. **物理 USB 热插拔、蓝牙路由与真实来电/闹钟中断**：
    - `R1` / `R3` 仅在单元测试用模拟通知验证过逻辑状态机；真机拔插瞬时无外放、重新插回 DX5 II 后采样率重协商稳定性、以及蓝牙耳机路由与真实系统电话/闹钟打断恢复，**待真机 `R1~R3` 与长跑稳定性验收**。
-5. **Sideloadly 免费 Apple ID 个人签装递归重签稳定性**：
-   - 与此前只有 1 个 `Mpv.framework` 不同，本版包含 7 个未签名纯 `arm64` 动态 `.framework`（均附带标准 `Info.plist` 与非空可执行权限），Sideloadly 对 7 个框架的重签加载在真机 iOS 27.2.1 的实装启动情况需在安装第一步即时确认。
+
+*(注：Build #6 真机 `HouseArrest` 日志已实证 Sideloadly 对 7 个未签名纯 `arm64` `.framework` 的递归重签与 `BASS 0x02041203` / 全部 5 个插件初始化可在 iPhone 17 iOS 27.2.1 正常完成，耗时 10 ms。)*
 
 ---
 
@@ -181,7 +214,7 @@ Get-Content .\build-info.txt
 1. **Un4seen BASS 商业授权与开源协议兼容性**：BASS 为闭源商业软件，个人非盈利免费，商业或含内购/广告分发前需向 Un4seen 购买对应 iOS 授权（且与纯 GPLv2/v3 代码不兼容）。当前仓库通过 Git 隔离、编译期拉取、QA 公钥加密产物与 Swift 协议抽象将后续替换或商业转签风险降至最低。
 2. **iOS 系统「耳机安全 / 音量限幅」破坏 DoP（高危听力/硬件风险）**：iOS 检测到 USB 设备且默认归类为「耳机」或系统音量未满 100% 时，系统级 DSP 会篡改 PCM 低位导致 DoP 变成刺耳白噪。工程已在软件层增加 **非 USB 禁播 DoP + 音量 < 99.9% 硬截断与 KVO 看门狗 + 三项安全勾选框**，仍需操作者在 iOS 系统设置手动设为「其他设备」并将耳放调到低音量。
 3. **iOS 公共 API 对物理端能力的不可知边界**：iOS `AVAudioSession` 无法枚举外接 DAC 支持采样率清单（需单频点试探），也无法回读最终发送给 DAC 的物理有效位深或 DSD 锁相状态。所有 UI 展示与报告已明确区分「音源实测 / 引擎观测 / 会话实读 / 外设不可读」。
-4. **Sideloadly 多框架重签风险**：7 个内嵌未签名 `arm64` 动态框架依赖 Sideloadly 全部重签；若真机闪退报错缺失签名，优先检查 Sideloadly 日志与手机端信任配置，备选可改用单文件静态打包或本地 Xcode 签名诊断。
+4. **Sideloadly 多框架重签风险（Build #6 已部分消解）**：Build #6 真机 `fidelune-bass-diagnostics.jsonl` 已实证 Sideloadly 签装后 7 个框架可在 iOS 27.2.1 全部正常动态加载并完成 `BASS_Init` 与 5 插件初始化；Build #7 修复 `UISceneDelegateClassName` 后需在首次打开时确认 UI 渲染正常即可。
 
 ### 6.2 关键技术决策摘要
 - **为什么选择「混合采样率策略」为默认选项**：LyrPlay 实测已证明在 iOS 上优先调 `AVAudioSession.setPreferredSampleRate` 可避免不必要重建；但不同 USB DAC 芯片响应时间差异较大，若 `AVAudioSession.sampleRate` 或 `BASS_INFO.freq` 在半程稳态后仍未对齐目标频率，混合策略才安全兜底触发 `BASS_DEVICE_FREQ | BASS_DEVICE_REINIT`（且 UI 保留策略切换滑块，方便真机如实排查是否出现回落重采样或短爆音）。
