@@ -85,6 +85,8 @@ def extract_package(pkg: dict, archive_bytes: bytes, frameworks_dir: Path, heade
                     mode = (info.external_attr >> 16) & 0o777
                     if mode:
                         dest.chmod(mode)
+                    elif dest.name == pkg["name"]:
+                        dest.chmod(0o755)
                 found_xcf_files += 1
 
     if not found_header:

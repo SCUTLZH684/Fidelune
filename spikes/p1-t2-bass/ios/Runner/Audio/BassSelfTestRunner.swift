@@ -143,19 +143,13 @@ final class BassSelfTestRunner {
         let t0 = Date()
         let bassVer = BASS_GetVersion()
         let mixVer = BASS_Mixer_GetVersion()
-        var pluginHandles: [String: HPLUGIN] = [:]
-        var missing: [String] = []
-        for name in ["bassflac", "bassdsd", "basswv", "bassape", "bassopus"] {
-            var h = name.withCString { BASS_PluginLoad($0, 0) }
-            if h == 0, let url = Bundle.main.privateFrameworksURL?.appendingPathComponent("\(name).framework/\(name)") {
-                h = url.path.withCString { BASS_PluginLoad($0, 0) }
-            }
-            if h == 0 {
-                missing.append(name)
-            } else {
-                pluginHandles[name] = h
-            }
-        }
+        let state = BassPluginRegistry.ensureAllPluginsLoaded(logger: logger)
+        let pluginHandles = state.loaded
+        let missing = state.missing
+        let errorSummary = state.errors
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ", ")
         let ok = (bassVer >= 0x02041200) && (mixVer >= 0x02040D00) && missing.isEmpty
         return SelfTestResult(
             id: "auto_bass_init",
@@ -164,12 +158,13 @@ final class BassSelfTestRunner {
             durationMs: elapsedMs(since: t0),
             summary: ok
                 ? "BASS 0x\(String(format: "%08X", bassVer)) / BASSmix 0x\(String(format: "%08X", mixVer)) 及全部 5 个插件加载成功"
-                : "插件加载缺失: \(missing.joined(separator: ", "))",
+                : "插件加载缺失: \(missing.joined(separator: ", ")) (\(errorSummary))",
             details: [
                 "bassVersion": String(format: "0x%08X", bassVer),
                 "bassMixVersion": String(format: "0x%08X", mixVer),
                 "loadedPlugins": pluginHandles.keys.sorted().joined(separator: ", "),
                 "missingPlugins": missing.joined(separator: ", "),
+                "pluginErrors": errorSummary,
             ]
         )
     }

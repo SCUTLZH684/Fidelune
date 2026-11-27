@@ -351,7 +351,6 @@ extension PlaybackQueueCoordinator: AudioPlaybackBackendDelegate {
     func backendDidStartPlaying(track: TrackSpec, signalPath: SignalPathSnapshot) {
         isPlaying = true
         isPaused = false
-        consecutiveFailureCount = 0
         self.signalPath = signalPath
         durationSeconds = backend.currentDurationSeconds
         emitState()
@@ -417,6 +416,9 @@ extension PlaybackQueueCoordinator: AudioPlaybackBackendDelegate {
 
     func backendDidUpdatePosition(seconds: Double, durationSeconds: Double) {
         self.positionSeconds = seconds
+        if seconds >= 0.5 {
+            consecutiveFailureCount = 0
+        }
         if durationSeconds > 0 {
             self.durationSeconds = durationSeconds
         }

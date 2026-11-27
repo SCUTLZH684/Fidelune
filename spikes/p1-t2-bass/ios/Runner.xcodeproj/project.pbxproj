@@ -318,7 +318,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Embed BASS XCFramework binaries for simulator or device\nset -e\nif [ \"$PLATFORM_NAME\" = \"iphonesimulator\" ]; then\n  SLICE=\"ios-arm64_i386_x86_64-simulator\"\nelse\n  SLICE=\"ios-arm64_armv7_armv7s\"\nfi\nFRAMEWORKS_DST=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\nmkdir -p \"${FRAMEWORKS_DST}\"\nfor NAME in bass bassmix bassdsd bassflac basswv bassape bassopus; do\n  SRC=\"${PROJECT_DIR}/Frameworks/${NAME}.xcframework/${SLICE}/${NAME}.framework\"\n  DST=\"${FRAMEWORKS_DST}/${NAME}.framework\"\n  rm -rf \"${DST}\"\n  cp -R \"${SRC}\" \"${DST}\"\n  xattr -cr \"${DST}\" || true\n  codesign --remove-signature \"${DST}\" 2>/dev/null || true\n  if [ \"$PLATFORM_NAME\" != \"iphonesimulator\" ]; then\n    BIN=\"${DST}/${NAME}\"\n    if lipo -info \"${BIN}\" 2>/dev/null | grep -q \"Architectures in the fat file:\" && lipo -info \"${BIN}\" 2>/dev/null | grep -q \"arm64\"; then\n      lipo -thin arm64 \"${BIN}\" -output \"${BIN}.arm64\"\n      mv \"${BIN}.arm64\" \"${BIN}\"\n    fi\n  else\n    codesign --force --sign - --timestamp=none \"${DST}\"\n  fi\n  if [ \"$PLATFORM_NAME\" != \"iphonesimulator\" ] && [ -n \"${EXPANDED_CODE_SIGN_IDENTITY}\" ] && [ \"${CODE_SIGNING_ALLOWED}\" = \"YES\" ]; then\n    codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --timestamp=none \"${DST}\"\n  fi\ndone\n";
+			shellScript = "# Embed BASS XCFramework binaries for simulator or device\nset -e\nif [ \"$PLATFORM_NAME\" = \"iphonesimulator\" ]; then\n  SLICE=\"ios-arm64_i386_x86_64-simulator\"\nelse\n  SLICE=\"ios-arm64_armv7_armv7s\"\nfi\nFRAMEWORKS_DST=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\nmkdir -p \"${FRAMEWORKS_DST}\"\nfor NAME in bass bassmix bassdsd bassflac basswv bassape bassopus; do\n  SRC=\"${PROJECT_DIR}/Frameworks/${NAME}.xcframework/${SLICE}/${NAME}.framework\"\n  DST=\"${FRAMEWORKS_DST}/${NAME}.framework\"\n  rm -rf \"${DST}\"\n  cp -R \"${SRC}\" \"${DST}\"\n  xattr -cr \"${DST}\" || true\n  codesign --remove-signature \"${DST}\" 2>/dev/null || true\n  BIN=\"${DST}/${NAME}\"\n  if [ -f \"${BIN}\" ]; then\n    chmod +x \"${BIN}\"\n  fi\n  if [ \"$PLATFORM_NAME\" != \"iphonesimulator\" ]; then\n    if lipo -info \"${BIN}\" 2>/dev/null | grep -q \"Architectures in the fat file:\" && lipo -info \"${BIN}\" 2>/dev/null | grep -q \"arm64\"; then\n      lipo -thin arm64 \"${BIN}\" -output \"${BIN}.arm64\"\n      mv \"${BIN}.arm64\" \"${BIN}\"\n      chmod +x \"${BIN}\"\n    fi\n  else\n    codesign --force --sign - --timestamp=none \"${DST}\"\n  fi\n  if [ \"$PLATFORM_NAME\" != \"iphonesimulator\" ] && [ -n \"${EXPANDED_CODE_SIGN_IDENTITY}\" ] && [ \"${CODE_SIGNING_ALLOWED}\" = \"YES\" ]; then\n    codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --timestamp=none \"${DST}\"\n  fi\ndone\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -481,6 +481,14 @@
 					bassmix,
 					"-framework",
 					bassdsd,
+					"-framework",
+					bassflac,
+					"-framework",
+					basswv,
+					"-framework",
+					bassape,
+					"-framework",
+					bassopus,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.scutlzh684.fideluneBass;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -784,6 +792,14 @@
 					bassmix,
 					"-framework",
 					bassdsd,
+					"-framework",
+					bassflac,
+					"-framework",
+					basswv,
+					"-framework",
+					bassape,
+					"-framework",
+					bassopus,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.scutlzh684.fideluneBass;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -840,6 +856,14 @@
 					bassmix,
 					"-framework",
 					bassdsd,
+					"-framework",
+					bassflac,
+					"-framework",
+					basswv,
+					"-framework",
+					bassape,
+					"-framework",
+					bassopus,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.scutlzh684.fideluneBass;
 				PRODUCT_NAME = "$(TARGET_NAME)";

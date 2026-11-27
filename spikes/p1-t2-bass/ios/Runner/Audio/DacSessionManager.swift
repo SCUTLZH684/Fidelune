@@ -59,6 +59,7 @@ final class DacSessionManager: NSObject {
         self.logger = logger
         self.sleepFn = sleepFn
         super.init()
+        registerObserversIfNeeded()
     }
 
     deinit {

@@ -1,5 +1,78 @@
 import Foundation
 
+enum BassPluginRegistry {
+    private static let lock = NSLock()
+    private static var loadedHandles: [String: HPLUGIN] = [:]
+
+    private static let pluginSpecs: [(index: Int32, name: String)] = [
+        (0, "bassflac"),
+        (1, "bassdsd"),
+        (2, "basswv"),
+        (3, "bassape"),
+        (4, "bassopus"),
+    ]
+
+    static func ensureAllPluginsLoaded(
+        logger: DiagnosticsSink? = nil
+    ) -> (loaded: [String: HPLUGIN], missing: [String], errors: [String: Int32]) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var missing: [String] = []
+        var errors: [String: Int32] = [:]
+
+        for spec in pluginSpecs {
+            if let existing = loadedHandles[spec.name], existing != 0 {
+                continue
+            }
+
+            var handle: HPLUGIN = 0
+            var lastErr: Int32 = 0
+
+            func tryLoad(_ block: () -> HPLUGIN) -> Bool {
+                let h = block()
+                if h != 0 {
+                    handle = h
+                    return true
+                }
+                let code = BASS_ErrorGetCode()
+                if code == BASS_ERROR_ALREADY {
+                    handle = 1
+                    return true
+                }
+                lastErr = code
+                return false
+            }
+
+            let ok =
+                tryLoad { FideluneLoadPluginByIndex(spec.index) } ||
+                tryLoad { spec.name.withCString { BASS_PluginLoad($0, 0) } } ||
+                tryLoad { "@rpath/\(spec.name).framework/\(spec.name)".withCString { BASS_PluginLoad($0, 0) } } ||
+                [
+                    Bundle.main.privateFrameworksURL?.appendingPathComponent("\(spec.name).framework/\(spec.name)").path,
+                    Bundle(for: BassAudioEngine.self).privateFrameworksURL?.appendingPathComponent("\(spec.name).framework/\(spec.name)").path,
+                ].compactMap { $0 }.contains { path in
+                    tryLoad { path.withCString { BASS_PluginLoad($0, 0) } }
+                }
+
+            if ok && handle != 0 {
+                loadedHandles[spec.name] = handle
+            } else {
+                missing.append(spec.name)
+                errors[spec.name] = lastErr
+                logger?.log(
+                    event: "bass-plugin-load-failed",
+                    category: "engine",
+                    message: "Failed to load plugin \(spec.name): BASS error \(lastErr)",
+                    fields: ["plugin": spec.name, "bassError": lastErr]
+                )
+            }
+        }
+
+        return (loadedHandles, missing, errors)
+    }
+}
+
 final class BassAudioEngine: AudioPlaybackBackend {
     weak var delegate: AudioPlaybackBackendDelegate?
 
@@ -73,8 +146,18 @@ final class BassAudioEngine: AudioPlaybackBackend {
             if initialized { return true }
             sessionManager.activateAtStartup(modeOption: lastSettings.sessionMode)
 
-            let code = initBassDeviceLocked(targetHz: 48000, reinit: false)
-            guard code == BASS_OK else {
+            var code = initBassDeviceLocked(targetHz: 48000, reinit: false)
+            #if targetEnvironment(simulator)
+            if code != BASS_OK && code != BASS_ERROR_ALREADY {
+                // Headless CI macOS runners may expose no default CoreAudio device to iOS Simulator;
+                // fall back to BASS "No sound" device (0) only on Simulator so decoding/mixer checks run.
+                let noSoundCode = initBassNoSoundSimulatorLocked(targetHz: 48000)
+                if noSoundCode == BASS_OK || noSoundCode == BASS_ERROR_ALREADY {
+                    code = noSoundCode
+                }
+            }
+            #endif
+            guard code == BASS_OK || code == BASS_ERROR_ALREADY else {
                 logger.log(
                     event: "bass-init-failed",
                     category: "engine",
@@ -85,9 +168,8 @@ final class BassAudioEngine: AudioPlaybackBackend {
             }
 
             // Load official format plugins cleanly
-            for name in ["bassflac", "bassdsd", "basswv", "bassape", "bassopus"] {
-                _ = loadPluginLocked(name: name)
-            }
+            let pluginState = BassPluginRegistry.ensureAllPluginsLoaded(logger: logger)
+            loadedPlugins = pluginState.loaded
 
             BASS_SetConfig(DWORD(BASS_CONFIG_FLOAT), 1)
             BASS_SetConfig(DWORD(BASS_CONFIG_NET_META), 0)
@@ -105,6 +187,8 @@ final class BassAudioEngine: AudioPlaybackBackend {
                     "bassVersion": String(format: "0x%08X", BASS_GetVersion()),
                     "bassMixVersion": String(format: "0x%08X", BASS_Mixer_GetVersion()),
                     "plugins": Array(loadedPlugins.keys).sorted(),
+                    "missingPlugins": pluginState.missing,
+                    "initCode": code,
                     "deviceRateHz": currentBassDeviceRateHz,
                 ]
             )
@@ -516,6 +600,13 @@ final class BassAudioEngine: AudioPlaybackBackend {
         return ok != 0 ? BASS_OK : BASS_ErrorGetCode()
     }
 
+    #if targetEnvironment(simulator)
+    private func initBassNoSoundSimulatorLocked(targetHz: Int) -> Int32 {
+        let ok = BASS_Init(0, DWORD(targetHz), DWORD(BASS_DEVICE_FREQ), nil, nil)
+        return ok != 0 ? BASS_OK : BASS_ErrorGetCode()
+    }
+    #endif
+
     private func reinitBassDeviceSampleRateLocked(_ targetHz: Int) -> Bool {
         let currentDev = BASS_GetDevice()
         guard currentDev != 0 && currentDev != DWORD.max else { return false }
@@ -540,32 +631,9 @@ final class BassAudioEngine: AudioPlaybackBackend {
     }
 
     private func loadPluginLocked(name: String) -> HPLUGIN {
-        if let existing = loadedPlugins[name], existing != 0 {
-            return existing
-        }
-        var handle = name.withCString { BASS_PluginLoad($0, 0) }
-        if handle == 0 {
-            let candidates = [
-                Bundle.main.privateFrameworksURL?.appendingPathComponent("\(name).framework/\(name)").path,
-                Bundle(for: BassAudioEngine.self).privateFrameworksURL?.appendingPathComponent("\(name).framework/\(name)").path,
-            ].compactMap { $0 }
-            for path in candidates {
-                handle = path.withCString { BASS_PluginLoad($0, 0) }
-                if handle != 0 { break }
-            }
-        }
-        if handle != 0 {
-            loadedPlugins[name] = handle
-        } else {
-            let err = BASS_ErrorGetCode()
-            logger.log(
-                event: "bass-plugin-load-failed",
-                category: "engine",
-                message: "Failed to load plugin \(name): BASS error \(err)",
-                fields: ["plugin": name, "bassError": err]
-            )
-        }
-        return handle
+        let state = BassPluginRegistry.ensureAllPluginsLoaded(logger: logger)
+        loadedPlugins = state.loaded
+        return state.loaded[name] ?? 0
     }
 
     private func openAndStartTrackLocked(
