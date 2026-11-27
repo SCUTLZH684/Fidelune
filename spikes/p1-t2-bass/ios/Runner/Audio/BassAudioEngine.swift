@@ -918,7 +918,7 @@ final class BassAudioEngine: AudioPlaybackBackend {
         // BASS_SYNC_FREE releases the retained context only when BASS finishes freeing sourceHandle.
         let freeSync = BASS_ChannelSetSync(
             sourceHandle,
-            DWORD(BASS_SYNC_FREE | BASS_SYNC_ONETIME),
+            DWORD(BASS_SYNC_FREE) | DWORD(BASS_SYNC_ONETIME),
             0,
             bassSourceFreedCallback,
             ptr
@@ -929,7 +929,7 @@ final class BassAudioEngine: AudioPlaybackBackend {
         }
         _ = BASS_Mixer_ChannelSetSync(
             sourceHandle,
-            DWORD(BASS_SYNC_END | BASS_SYNC_ONETIME),
+            DWORD(BASS_SYNC_END) | DWORD(BASS_SYNC_ONETIME),
             0,
             bassSourcePlaytimeEndCallback,
             ptr

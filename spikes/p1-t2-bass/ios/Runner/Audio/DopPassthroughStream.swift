@@ -93,7 +93,6 @@ final class DopPassthroughStream {
 
         var out: HSTREAM = 0
         self.outputHandle = 0
-        super.initIfPlaceholder()
 
         let ptr = Unmanaged.passRetained(self)
         self.retainedSelf = ptr
