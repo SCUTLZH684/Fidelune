@@ -11,6 +11,9 @@ void main() {
   runApp(const MaterialApp(home: AudioProbe()));
 }
 
+const silenceOutputTrial = '保持 AudioUnit 对照';
+const sameSpecTracks = ['flac48000.flac', 'wav24.wav'];
+
 const suites = <String, List<String>>{
   'FLAC 阶梯': [
     'flac44100.flac', 'flac48000.flac', 'flac88200.flac',
@@ -29,7 +32,8 @@ const suites = <String, List<String>>{
   '无缝 A → B': ['gap-a.wav', 'gap-b.wav'],
   'DSF': ['dsd64.dsf'],
   '已封装 DoP': ['dop64.wav'],
-  '手动切歌同规格': ['flac48000.flac', 'wav24.wav'],
+  '手动切歌同规格': sameSpecTracks,
+  silenceOutputTrial: sameSpecTracks,
   'PCM 24 源样值回读': ['wav24.wav'],
   'PCM A → B 边界回读': ['gap-a.wav', 'gap-b.wav'],
   '系统控制 / 循环': [
@@ -44,7 +48,10 @@ const captures = {
 
 const usbTrials = {
   '请求 44.1 kHz': ('flac44100.flac', 44100),
+  '请求 48 kHz': ('flac48000.flac', 48000),
+  '请求 88.2 kHz': ('flac88200.flac', 88200),
   '请求 96 kHz': ('flac96000.flac', 96000),
+  '请求 176.4 kHz（PCM）': ('flac176400.flac', 176400),
   '请求 192 kHz': ('flac192000.flac', 192000),
   '请求 176.4 kHz / DoP': ('dop64.wav', 176400),
 };
@@ -170,6 +177,7 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
       'audio-out-params/channels', 'af', 'options/audio-samplerate',
       'options/gapless-audio', 'options/audio-spdif', 'options/audiounit-skip-session-management',
       'options/ao', 'options/audio-format', 'options/cache-on-disk',
+      'options/audio-stream-silence',
       'volume', 'speed', 'pause', 'time-pos',
     ]) {
       final value = await mpv.getProperty(key);
@@ -231,6 +239,10 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
       if (await mpv.getProperty('options/gapless-audio') != selectedGapless) {
         await mpv.setProperty('options/gapless-audio', selectedGapless);
       }
+      final streamSilence = name == silenceOutputTrial ? 'yes' : 'no';
+      if (await mpv.getProperty('options/audio-stream-silence') != streamSilence) {
+        await mpv.setProperty('options/audio-stream-silence', streamSilence);
+      }
       final capture = captures[name];
       if (capture != null) {
         final path = await bridge.invokeMethod<String>('capturePath', capture);
@@ -259,6 +271,7 @@ class _AudioProbeState extends State<AudioProbe> with WidgetsBindingObserver {
       await record('suite-start', {
         'requestedGapless': gapless.isEmpty ? null : gapless,
         'requestedDsdPassthrough': passthrough,
+        'requestedStreamSilence': streamSilence,
         'captureFile': capture,
         'requestedSessionHz': trial?.$2,
         'tracks': tracks,
