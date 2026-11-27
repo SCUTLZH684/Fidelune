@@ -37,7 +37,7 @@ jobs:
         run: |
           set -o pipefail
           log="$RUNNER_TEMP/step_fixtures.log"
-          trap 'rc=$?; if [ $rc -ne 0 ]; then { echo "### Step Failed: Fixtures & Python Tests (exit $rc)"; echo "\`\`\`text"; tail -n 120 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
+          trap 'rc=$?; if [ $rc -ne 0 ]; then tail -n 25 "$log" | tr "\n" " " | sed "s/^/::error::/" || true; { echo "### Step Failed: Fixtures & Python Tests (exit $rc)"; echo "\`\`\`text"; tail -n 120 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
           {
             command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null || brew install ffmpeg
             python3 tools/fixtures.py
@@ -54,7 +54,7 @@ jobs:
         run: |
           set -o pipefail
           log="$RUNNER_TEMP/step_flutter.log"
-          trap 'rc=$?; if [ $rc -ne 0 ]; then { echo "### Step Failed: Flutter Analyze & Test (exit $rc)"; echo "\`\`\`text"; tail -n 120 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
+          trap 'rc=$?; if [ $rc -ne 0 ]; then tail -n 25 "$log" | tr "\n" " " | sed "s/^/::error::/" || true; { echo "### Step Failed: Flutter Analyze & Test (exit $rc)"; echo "\`\`\`text"; tail -n 120 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
           {
             flutter config --no-enable-swift-package-manager
             flutter pub get --enforce-lockfile
@@ -72,7 +72,7 @@ jobs:
         run: |
           set -o pipefail
           log="$RUNNER_TEMP/step_xctest.log"
-          trap 'rc=$?; if [ $rc -ne 0 ]; then { echo "### Step Failed: Swift XCTests (exit $rc)"; echo "\`\`\`text"; tail -n 150 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
+          trap 'rc=$?; if [ $rc -ne 0 ]; then tail -n 30 "$log" | tr "\n" " " | sed "s/^/::error::/" || true; { echo "### Step Failed: Swift XCTests (exit $rc)"; echo "\`\`\`text"; tail -n 150 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
           {
             flutter build ios --simulator --debug --no-pub
             SIM_UDID="$(python3 -c "
@@ -102,12 +102,14 @@ jobs:
             grep -E "Test Case .* (passed|failed)|Executed .* test" "$log" || tail -n 30 "$log"
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          xctest_line="$(grep -E "Executed .* test" "$log" | tail -n 5 | tr '\n' ' ')"
+          echo "::notice title=Swift XCTests::${xctest_line:-Passed}"
 
       - name: Archive unsigned release IPA
         run: |
           set -o pipefail
           log="$RUNNER_TEMP/step_archive.log"
-          trap 'rc=$?; if [ $rc -ne 0 ]; then { echo "### Step Failed: Archive IPA (exit $rc)"; echo "\`\`\`text"; tail -n 120 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
+          trap 'rc=$?; if [ $rc -ne 0 ]; then tail -n 25 "$log" | tr "\n" " " | sed "s/^/::error::/" || true; { echo "### Step Failed: Archive IPA (exit $rc)"; echo "\`\`\`text"; tail -n 120 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
           flutter build ipa --release --no-codesign --no-pub --build-number "$BUILD_NUMBER" 2>&1 | tee "$log"
 
       - name: Verify IPA, BASS frameworks, dSYM UUID, and encrypt QA bundle
@@ -115,7 +117,7 @@ jobs:
           set -o pipefail
           log="$RUNNER_TEMP/step_verify_ipa.log"
           out="$RUNNER_TEMP/p1t2bass"
-          trap 'rc=$?; if [ $rc -ne 0 ]; then { echo "### Step Failed: Verify IPA (exit $rc)"; echo "\`\`\`text"; tail -n 120 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
+          trap 'rc=$?; if [ $rc -ne 0 ]; then tail -n 25 "$log" | tr "\n" " " | sed "s/^/::error::/" || true; { echo "### Step Failed: Verify IPA (exit $rc)"; echo "\`\`\`text"; tail -n 120 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
           {
             archive=build/ios/archive/Runner.xcarchive
             app="$archive/Products/Applications/Runner.app"
@@ -181,6 +183,8 @@ jobs:
             cat "$out/build-info.txt"
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          info_line="$(tr '\n' ' ' < "$out/build-info.txt" | cut -c1-1200)"
+          echo "::notice title=Build Info #${BUILD_NUMBER}::${info_line}"
 
       - name: Upload encrypted QA bundle and build metadata
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

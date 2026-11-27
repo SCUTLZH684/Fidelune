@@ -6,6 +6,8 @@ import 'package:fidelune_bass/acceptance/acceptance_controller.dart';
 import 'package:fidelune_bass/audio/audio_engine_gateway.dart';
 import 'package:fidelune_bass/main.dart';
 import 'package:fidelune_bass/models/audio_models.dart';
+import 'package:fidelune_bass/screens/acceptance_home_screen.dart';
+import 'package:fidelune_bass/screens/dac_monitor_screen.dart';
 import 'package:fidelune_bass/widgets/dop_safety_dialog.dart';
 import 'package:fidelune_bass/widgets/signal_path_card.dart';
 
@@ -286,15 +288,18 @@ void main() {
     );
 
     await tester.pumpWidget(
-      const MaterialApp(home: Scaffold(body: DopSafetyDialog(dacProfile: lowVolUsb))),
+      const MaterialApp(
+        home: Scaffold(body: DopSafetyDialog(key: ValueKey('low-vol-dop'), dacProfile: lowVolUsb)),
+      ),
     );
     final unlockFinder = find.widgetWithText(FilledButton, '确认安全并解锁 DoP');
     expect(tester.widget<FilledButton>(unlockFinder).onPressed, isNull);
 
     // Check all 3 boxes — still blocked because volume is 80%
-    final checkboxes = find.byType(CheckboxListTile);
     for (var i = 0; i < 3; i++) {
-      await tester.tap(checkboxes.at(i));
+      final cb = find.byType(CheckboxListTile).at(i);
+      await tester.ensureVisible(cb);
+      await tester.tap(cb);
     }
     await tester.pump();
     expect(tester.widget<FilledButton>(unlockFinder).onPressed, isNull);
@@ -317,10 +322,14 @@ void main() {
       supportsDopCandidate: true,
     );
     await tester.pumpWidget(
-      const MaterialApp(home: Scaffold(body: DopSafetyDialog(dacProfile: fullVolUsb))),
+      const MaterialApp(
+        home: Scaffold(body: DopSafetyDialog(key: ValueKey('full-vol-dop'), dacProfile: fullVolUsb)),
+      ),
     );
     for (var i = 0; i < 3; i++) {
-      await tester.tap(find.byType(CheckboxListTile).at(i));
+      final cb = find.byType(CheckboxListTile).at(i);
+      await tester.ensureVisible(cb);
+      await tester.tap(cb);
     }
     await tester.pump();
     expect(tester.widget<FilledButton>(unlockFinder).onPressed, isNotNull);
@@ -374,8 +383,15 @@ void main() {
     await tester.pumpAndSettle();
     expect(gateway.actions, contains('runAutomatedSelfTests'));
 
-    // Enter H1 detail screen
-    await tester.tap(find.text('扬声器防爆音：暂停、继续、拖动进度与手动切歌'));
+    // Enter H1 detail screen (scroll into view first on small test viewports)
+    final h1Finder = find.text('扬声器防爆音：暂停、继续、拖动进度与手动切歌');
+    final homeScroll = find.descendant(
+      of: find.byType(AcceptanceHomeScreen),
+      matching: find.byType(Scrollable),
+    );
+    await tester.scrollUntilVisible(h1Finder, 200, scrollable: homeScroll);
+    await tester.pumpAndSettle();
+    await tester.tap(h1Finder);
     await tester.pumpAndSettle();
     final launchBtn = find.text('启动本项测试音频 (2 首)');
     await tester.ensureVisible(launchBtn);
@@ -392,7 +408,13 @@ void main() {
 
     await tester.tap(find.text('链路/DAC'));
     await tester.pumpAndSettle();
-    expect(find.text('单频点 DAC 采样率握手探测'), findsOneWidget);
+    final probeHeading = find.text('单频点 DAC 采样率握手探测');
+    final dacScroll = find.descendant(
+      of: find.byType(DacMonitorScreen),
+      matching: find.byType(Scrollable),
+    );
+    await tester.scrollUntilVisible(probeHeading, 200, scrollable: dacScroll);
+    expect(probeHeading, findsOneWidget);
 
     await tester.tap(find.text('报告导出'));
     await tester.pumpAndSettle();
