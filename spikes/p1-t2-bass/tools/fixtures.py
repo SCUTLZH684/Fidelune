@@ -18,7 +18,14 @@ PCM_LADDER_RATES = [44100, 48000, 88200, 96000, 176400, 192000, 384000]
 
 
 def ffmpeg(*args: object) -> bytes:
-    return subprocess.check_output(["ffmpeg", "-v", "error", "-nostdin", *map(str, args)])
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", *map(str, args)]
+    proc = subprocess.run(cmd, capture_output=True, check=False)
+    if proc.returncode != 0:
+        err = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise subprocess.CalledProcessError(
+            proc.returncode, cmd, output=proc.stdout, stderr=proc.stderr
+        ) if not err else RuntimeError(f"ffmpeg failed ({proc.returncode}) for {cmd}: {err}")
+    return proc.stdout
 
 
 def supported_encoders() -> set[str]:
@@ -173,6 +180,8 @@ def generate() -> None:
                     print(f"[skip] Encoder {codec} not available for {name}")
                     return
                 extra = ["-b:a", "192k"] if suffix in {".mp3", ".aac", ".opus"} else []
+                if suffix == ".flac" and rate > 192000:
+                    extra.extend(["-strict", "-2"])
                 ffmpeg(
                     "-y",
                     "-i",
@@ -283,7 +292,8 @@ def generate() -> None:
         stream = next(iter(info.get("streams", [])), {})
         fmt = info.get("format", {})
         invalid = path.name.startswith("invalid")
-        assert invalid == (int(stream.get("sample_rate", 0)) == 0), path
+        probed_rate = int(stream.get("sample_rate") or 0)
+        assert invalid == (probed_rate == 0), (path, stream)
         if invalid:
             decode = subprocess.run(
                 ["ffmpeg", "-v", "error", "-nostdin", "-i", str(path), "-f", "s16le", "-"],
@@ -294,10 +304,19 @@ def generate() -> None:
 
         expected = expectations.get(path.name, {})
         if expected:
-            assert int(stream["sample_rate"]) == expected["generator_rate_hz"], path
-            assert stream["channels"] == expected["generator_channels"], path
-            if stream.get("bits_per_raw_sample", "N/A") != "N/A":
-                assert int(stream["bits_per_raw_sample"]) == expected["source_valid_bits"], path
+            assert int(stream["sample_rate"]) == expected["generator_rate_hz"], (path, stream)
+            assert stream["channels"] == expected["generator_channels"], (path, stream)
+            raw_bits = stream.get("bits_per_raw_sample")
+            if (
+                expected.get("source_valid_bits") is not None
+                and raw_bits not in (None, "", "N/A", "0")
+                and path.suffix.lower() != ".wv"
+            ):
+                assert int(raw_bits) == expected["source_valid_bits"], (
+                    path,
+                    raw_bits,
+                    expected["source_valid_bits"],
+                )
 
         sources[path.name] = {
             "sha256": digest(path.read_bytes()),

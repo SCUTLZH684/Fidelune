@@ -35,21 +35,47 @@ jobs:
 
       - name: Generate and bit-verify audio fixtures & run Python tests
         run: |
-          command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null || brew install ffmpeg
-          python3 tools/fixtures.py
-          python3 -m unittest discover -s tools -v
+          set -o pipefail
+          log="$RUNNER_TEMP/step_fixtures.log"
+          trap 'rc=$?; if [ $rc -ne 0 ]; then { echo "### Step Failed: Fixtures & Python Tests (exit $rc)"; echo "\`\`\`text"; tail -n 120 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
+          {
+            command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null || brew install ffmpeg
+            python3 tools/fixtures.py
+            python3 -m unittest discover -s tools -v
+          } 2>&1 | tee "$log"
+          {
+            echo "### Fixtures & Python Tests: Passed"
+            echo "\`\`\`text"
+            tail -n 20 "$log"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Resolve Flutter packages, analyze, and run Flutter tests
         run: |
-          flutter config --no-enable-swift-package-manager
-          flutter pub get --enforce-lockfile
-          flutter analyze --no-pub
-          flutter test --no-pub
+          set -o pipefail
+          log="$RUNNER_TEMP/step_flutter.log"
+          trap 'rc=$?; if [ $rc -ne 0 ]; then { echo "### Step Failed: Flutter Analyze & Test (exit $rc)"; echo "\`\`\`text"; tail -n 120 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
+          {
+            flutter config --no-enable-swift-package-manager
+            flutter pub get --enforce-lockfile
+            flutter analyze --no-pub
+            flutter test --no-pub
+          } 2>&1 | tee "$log"
+          {
+            echo "### Flutter Analyze & Test: Passed"
+            echo "\`\`\`text"
+            tail -n 15 "$log"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run Swift XCTests (real BASS binary checks on iOS Simulator)
         run: |
-          flutter build ios --simulator --debug --no-pub
-          SIM_UDID="$(python3 -c "
+          set -o pipefail
+          log="$RUNNER_TEMP/step_xctest.log"
+          trap 'rc=$?; if [ $rc -ne 0 ]; then { echo "### Step Failed: Swift XCTests (exit $rc)"; echo "\`\`\`text"; tail -n 150 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
+          {
+            flutter build ios --simulator --debug --no-pub
+            SIM_UDID="$(python3 -c "
           import json, subprocess
           data = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'devices', 'available', '-j']))
           for runtime, devs in sorted(data['devices'].items(), reverse=True):
@@ -60,79 +86,101 @@ jobs:
                           raise SystemExit(0)
           raise SystemExit('No available iPhone simulator found')
           ")"
-          echo "Using iOS Simulator UDID: $SIM_UDID"
-          TEST_RUNNER_FIDELUNE_FIXTURES_DIR="$PWD/fixtures" \
-            xcodebuild test \
-              -project ios/Runner.xcodeproj \
-              -scheme Runner \
-              -configuration Debug \
-              -destination "platform=iOS Simulator,id=$SIM_UDID" \
-              -parallel-testing-enabled NO \
-              -only-testing:RunnerTests
+            echo "Using iOS Simulator UDID: $SIM_UDID"
+            TEST_RUNNER_FIDELUNE_FIXTURES_DIR="$PWD/fixtures" \
+              xcodebuild test \
+                -project ios/Runner.xcodeproj \
+                -scheme Runner \
+                -configuration Debug \
+                -destination "platform=iOS Simulator,id=$SIM_UDID" \
+                -parallel-testing-enabled NO \
+                -only-testing:RunnerTests
+          } 2>&1 | tee "$log"
+          {
+            echo "### Swift XCTests (Simulator): Passed"
+            echo "\`\`\`text"
+            grep -E "Test Case .* (passed|failed)|Executed .* test" "$log" || tail -n 30 "$log"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Archive unsigned release IPA
-        run: flutter build ipa --release --no-codesign --no-pub --build-number "$BUILD_NUMBER"
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/step_archive.log"
+          trap 'rc=$?; if [ $rc -ne 0 ]; then { echo "### Step Failed: Archive IPA (exit $rc)"; echo "\`\`\`text"; tail -n 120 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
+          flutter build ipa --release --no-codesign --no-pub --build-number "$BUILD_NUMBER" 2>&1 | tee "$log"
 
       - name: Verify IPA, BASS frameworks, dSYM UUID, and encrypt QA bundle
         run: |
-          archive=build/ios/archive/Runner.xcarchive
-          app="$archive/Products/Applications/Runner.app"
-          dsym="$archive/dSYMs/Runner.app.dSYM"
+          set -o pipefail
+          log="$RUNNER_TEMP/step_verify_ipa.log"
           out="$RUNNER_TEMP/p1t2bass"
-          recipient="$PWD/tools/qa-artifact-recipient.pem"
-          mkdir -p "$out/Payload"
-
-          test ! -e "$app/embedded.mobileprovision"
-          if codesign --display "$app/Runner" 2>/dev/null; then
-            echo "Unexpected signature on Runner"
-            exit 1
-          fi
-          test "$(lipo -archs "$app/Runner")" = arm64
-          test "$(plutil -extract CFBundleIdentifier raw "$app/Info.plist")" = io.github.scutlzh684.fideluneBass
-          test "$(plutil -extract CFBundleVersion raw "$app/Info.plist")" = "$BUILD_NUMBER"
-          test "$(plutil -extract UIBackgroundModes.0 raw "$app/Info.plist")" = audio
-          test "$(plutil -extract UIFileSharingEnabled raw "$app/Info.plist")" = true -o "$(plutil -extract UIFileSharingEnabled raw "$app/Info.plist")" = 1
-          test "$(plutil -extract LSSupportsOpeningDocumentsInPlace raw "$app/Info.plist")" = true -o "$(plutil -extract LSSupportsOpeningDocumentsInPlace raw "$app/Info.plist")" = 1
-
-          for fw in bass bassmix bassdsd bassflac basswv bassape bassopus; do
-            test -d "$app/Frameworks/${fw}.framework"
-            test "$(lipo -archs "$app/Frameworks/${fw}.framework/${fw}")" = arm64
-          done
-
-          runner_uuid="$(dwarfdump --uuid "$app/Runner" | cut -d ' ' -f 2)"
-          test -n "$runner_uuid"
-          test "$(dwarfdump --uuid "$dsym" | cut -d ' ' -f 2)" = "$runner_uuid"
-
-          ditto "$app" "$out/Payload/Runner.app"
-          ditto -c -k --keepParent "$out/Payload" "$out/fidelune-bass-unsigned.ipa"
-          ditto -c -k --keepParent "$archive/dSYMs" "$out/fidelune-bass-dsyms.zip"
-          cp fixtures/manifest.json "$out/fixtures-manifest.json"
-          cp pubspec.lock "$out/pubspec.lock"
-          cp ios/Frameworks/bass_verified.json "$out/bass_verified.json"
-
+          trap 'rc=$?; if [ $rc -ne 0 ]; then { echo "### Step Failed: Verify IPA (exit $rc)"; echo "\`\`\`text"; tail -n 120 "$log"; echo "\`\`\`"; } >> "$GITHUB_STEP_SUMMARY"; fi' EXIT
           {
-            printf 'commit=%s\nrunner_image=%s %s\nbuild=release %s\n' "$GITHUB_SHA" "$ImageOS" "$ImageVersion" "$BUILD_NUMBER"
-            sw_vers
-            uname -m
-            xcodebuild -version
-            xcrun --sdk iphoneos --show-sdk-version
-            flutter --version
-            plutil -extract MinimumOSVersion raw "$app/Info.plist"
-            printf 'runner_uuid=%s\n' "$runner_uuid"
-            for fw in bass bassmix bassdsd bassflac basswv bassape bassopus; do
-              shasum -a 256 "$app/Frameworks/${fw}.framework/${fw}"
-            done
-            cd "$out"
-            wc -c fidelune-bass-unsigned.ipa
-            shasum -a 256 fidelune-bass-unsigned.ipa fidelune-bass-dsyms.zip fixtures-manifest.json pubspec.lock bass_verified.json
-          } > "$out/build-info.txt"
-          cat "$out/build-info.txt"
+            archive=build/ios/archive/Runner.xcarchive
+            app="$archive/Products/Applications/Runner.app"
+            dsym="$archive/dSYMs/Runner.app.dSYM"
+            recipient="$PWD/tools/qa-artifact-recipient.pem"
+            mkdir -p "$out/Payload"
 
-          openssl_bin="$(brew --prefix openssl@3)/bin/openssl"
-          "$openssl_bin" cms -encrypt -binary -aes256 -outform DER \
-            -in "$out/fidelune-bass-unsigned.ipa" -out "$out/fidelune-bass-unsigned.ipa.cms" "$recipient"
-          "$openssl_bin" cms -encrypt -binary -aes256 -outform DER \
-            -in "$out/fidelune-bass-dsyms.zip" -out "$out/fidelune-bass-dsyms.zip.cms" "$recipient"
+            test ! -e "$app/embedded.mobileprovision"
+            if codesign --display "$app/Runner" 2>/dev/null; then
+              echo "Unexpected signature on Runner"
+              exit 1
+            fi
+            test "$(lipo -archs "$app/Runner")" = arm64
+            test "$(plutil -extract CFBundleIdentifier raw "$app/Info.plist")" = io.github.scutlzh684.fideluneBass
+            test "$(plutil -extract CFBundleVersion raw "$app/Info.plist")" = "$BUILD_NUMBER"
+            test "$(plutil -extract UIBackgroundModes.0 raw "$app/Info.plist")" = audio
+            test "$(plutil -extract UIFileSharingEnabled raw "$app/Info.plist")" = true -o "$(plutil -extract UIFileSharingEnabled raw "$app/Info.plist")" = 1
+            test "$(plutil -extract LSSupportsOpeningDocumentsInPlace raw "$app/Info.plist")" = true -o "$(plutil -extract LSSupportsOpeningDocumentsInPlace raw "$app/Info.plist")" = 1
+
+            for fw in bass bassmix bassdsd bassflac basswv bassape bassopus; do
+              test -d "$app/Frameworks/${fw}.framework"
+              test "$(lipo -archs "$app/Frameworks/${fw}.framework/${fw}")" = arm64
+            done
+
+            runner_uuid="$(dwarfdump --uuid "$app/Runner" | cut -d ' ' -f 2)"
+            test -n "$runner_uuid"
+            test "$(dwarfdump --uuid "$dsym" | cut -d ' ' -f 2)" = "$runner_uuid"
+
+            ditto "$app" "$out/Payload/Runner.app"
+            ditto -c -k --keepParent "$out/Payload" "$out/fidelune-bass-unsigned.ipa"
+            ditto -c -k --keepParent "$archive/dSYMs" "$out/fidelune-bass-dsyms.zip"
+            cp fixtures/manifest.json "$out/fixtures-manifest.json"
+            cp pubspec.lock "$out/pubspec.lock"
+            cp ios/Frameworks/bass_verified.json "$out/bass_verified.json"
+
+            {
+              printf 'commit=%s\nrunner_image=%s %s\nbuild=release %s\n' "$GITHUB_SHA" "$ImageOS" "$ImageVersion" "$BUILD_NUMBER"
+              sw_vers
+              uname -m
+              xcodebuild -version
+              xcrun --sdk iphoneos --show-sdk-version
+              flutter --version
+              plutil -extract MinimumOSVersion raw "$app/Info.plist"
+              printf 'runner_uuid=%s\n' "$runner_uuid"
+              for fw in bass bassmix bassdsd bassflac basswv bassape bassopus; do
+                shasum -a 256 "$app/Frameworks/${fw}.framework/${fw}"
+              done
+              cd "$out"
+              wc -c fidelune-bass-unsigned.ipa
+              shasum -a 256 fidelune-bass-unsigned.ipa fidelune-bass-dsyms.zip fixtures-manifest.json pubspec.lock bass_verified.json
+            } > "$out/build-info.txt"
+            cat "$out/build-info.txt"
+
+            openssl_bin="$(brew --prefix openssl@3)/bin/openssl"
+            "$openssl_bin" cms -encrypt -binary -aes256 -outform DER \
+              -in "$out/fidelune-bass-unsigned.ipa" -out "$out/fidelune-bass-unsigned.ipa.cms" "$recipient"
+            "$openssl_bin" cms -encrypt -binary -aes256 -outform DER \
+              -in "$out/fidelune-bass-dsyms.zip" -out "$out/fidelune-bass-dsyms.zip.cms" "$recipient"
+          } 2>&1 | tee "$log"
+          {
+            echo "### Unsigned IPA Verified & Encrypted (Build #${BUILD_NUMBER})"
+            echo "\`\`\`text"
+            cat "$out/build-info.txt"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload encrypted QA bundle and build metadata
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
