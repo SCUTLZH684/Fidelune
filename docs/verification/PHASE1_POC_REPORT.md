@@ -221,3 +221,17 @@ TOPPING 公布 DX5 II V2.58 修复 USB PCM 改变采样率后恢复时的爆音�
 原版 mpv 加 Swift 已证实部分 USB PCM 档位可以协商原速率。继续维护 mpv 驱动分支仍需独立处理爆音和 iOS DoP。Darwin 上游补丁可交出会话管理权，当前证据不足以预期它会清除两个缺陷。优先换到已有同规格队列与异规格换图实现的备选引擎做一次真机对照，避免再扩散试包。 [Darwin 会话补丁](https://github.com/media-kit/libmpv-darwin-build/pull/52)
 
 备选包只复查会决定路线的项目。用同一 iPhone 和 DX5 II 复核自动跨规格后的会话和 DAC 读数，使用构建 7/8 同一组复查切歌和暂停爆音，再核验同规格间隙。SFB 提供 `SFBDoPDecoder` 和 `SFBDSDPCMDecoder`。DoP 单独验证实际识别与载荷完整性，现有尖声用例保持失败。若无法证实 DoP，是否允许明确标注的 DSD→PCM 降级由发起人决定。当前未接入 SFB、未测其真机结果，未定案 G1。 [SFB DSD 解码说明](https://github.com/sbooth/SFBAudioEngine/tree/0.15.0#decoding)
+
+### 换线程交接 · 2026-11-27
+
+从 `codex/p1-t2` 接续。测试机为 iPhone 17（iOS 27.2.1），外接 DAC 为 TOPPING DX5 II，最新已签装并取证的是构建 8，源码提交为 `6f082c4`。工程、签装和 USB 取证步骤见[验证工程](../../spikes/p1-t2/README.md)。归档目录包含素材清单、比较结果和脱敏事件，原始 USB 日志、回读 WAV、解密后的 IPA 和 dSYM 由 Windows 本机 `%LOCALAPPDATA%\Fidelune\P1-T2` 保管。 [证据目录](p1-t2/) · [构建 8 校验值](p1-t2/build-8-info.txt)
+
+| 回看顺序 | 操作与结论 | 优先读取 |
+| --- | --- | --- |
+| 构建 4，原版基线 | 播放 44.1～192 kHz 阶梯。引擎按源速率送出，USB 会话和 DAC 屏显均为 48 kHz。另用 `ao=pcm` 回读，48 kHz/24 bit 样值全段匹配，44.1 kHz A → B 接缝零插帧、零丢帧。 | [USB 阶梯](p1-t2/device-build-4-usb.jsonl) · [PCM 回读](p1-t2/device-build-4-pcm-comparison.json) |
+| 构建 7，Swift 会话与恢复 | 单曲会话请求让 44.1、96、192 kHz 的引擎、会话、DAC 屏显一致。DAC 拔出后无外放，接回手动继续和计时器恢复都回到原位置。预封装 DoP 在 176.4 kHz 请求下出现左耳尖声，设备 PCM/DSD 模式未留存。 | [速率对照](p1-t2/device-build-7-usb-rate.jsonl) · [恢复复测](p1-t2/device-build-7-recovery.jsonl) · [DoP 源检查](p1-t2/build-7-dop-source-check.json) |
+| 构建 7、8，爆音对照 | 扬声器同为 48 kHz/24 bit 立体声时，直接切歌和暂停都可听见爆音。切歌日志没有新开 AudioUnit。构建 8 确认 `audio-stream-silence=yes` 生效后，两项依旧失败。具体瞬态成因仍待独立取样。 | [默认对照](p1-t2/device-build-7-manual-switch.jsonl) · [保持输出对照](p1-t2/device-build-8-stream-silence.jsonl) |
+
+**待决定。** 建议将原版 mpv 固定为对照。发起人确认后，从官方 SimplePlayer-iOS 接入 SFBAudioEngine 0.15.0，只做一包同机对照，优先测自动跨规格、暂停和切歌的爆音、同规格无缝。此次归档时 SFB 尚未接入，P1-T2 的质量问题保持开放，G1 尚未定案。正式播放器开发仍以 G1、G2 通过为准。 [架构建议](#音频架构建议--待发起人决定)
+
+**仍缺的证据。** 构建 8 的 48、88.2、176.4 kHz 单曲偏好对照尚无真机与 DAC 的配对数据。预封装 DoP 尖声维持失败，先用普通 176.4 kHz PCM 隔离采样率因素。实际 USB 数字样值未采集，所以 DAC 端 Bit-perfect 和硬件边界的零间隙尚未证实。蓝牙已有路由记录，播放未验证。来电、播放中的真实闹钟及四小时长播见上表状态。
