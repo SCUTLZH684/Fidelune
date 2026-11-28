@@ -87,8 +87,11 @@ final class BassAudioEngine: AudioPlaybackBackend {
     private var loadedPlugins: [String: HPLUGIN] = [:]
     private var idlePauseWorkItem: DispatchWorkItem?
     private var progressTimer: DispatchSourceTimer?
+    private var dopWatchdogTimer: DispatchSourceTimer?
+    private var norampRestoreWorkItem: DispatchWorkItem?
     private var pendingOperationWorkItem: DispatchWorkItem?
     private var operationEpoch: Int = 0
+    private var lastRateRecoveryAttempt: Date = .distantPast
 
     // Active PCM mixer state (guarded by engineQueue)
     private var mixerStream: HSTREAM = 0
@@ -137,13 +140,18 @@ final class BassAudioEngine: AudioPlaybackBackend {
 
     deinit {
         progressTimer?.cancel()
+        dopWatchdogTimer?.cancel()
         idlePauseWorkItem?.cancel()
+        norampRestoreWorkItem?.cancel()
         pendingOperationWorkItem?.cancel()
     }
 
     func initialize() -> Bool {
         engineQueue.sync {
             if initialized { return true }
+            // LyrPlay / BASS iOS pattern: disable BASS_IOS_SESSION_MIX & BTHFP BEFORE BASS_Init
+            // so Lock Screen / Dynamic Island controls stay eligible and USB DAC clock isn't shared.
+            BASS_SetConfig(DWORD(BASS_CONFIG_IOS_SESSION), 0)
             sessionManager.activateAtStartup(modeOption: lastSettings.sessionMode)
 
             var code = initBassDeviceLocked(targetHz: 48000, reinit: false)
@@ -167,14 +175,19 @@ final class BassAudioEngine: AudioPlaybackBackend {
                 return false
             }
 
+            // Re-assert exclusive playback session after BASS_Init in case iOS touched options
+            _ = sessionManager.configurePlaybackSession(modeOption: lastSettings.sessionMode)
+
             // Load official format plugins cleanly
             let pluginState = BassPluginRegistry.ensureAllPluginsLoaded(logger: logger)
             loadedPlugins = pluginState.loaded
 
             BASS_SetConfig(DWORD(BASS_CONFIG_FLOAT), 1)
+            BASS_SetConfig(DWORD(BASS_CONFIG_FLOATDSP), 1)
+            BASS_SetConfig(DWORD(BASS_CONFIG_DEV_NONSTOP), 1)
+            BASS_SetConfig(DWORD(BASS_CONFIG_GVOL_STREAM), 10000)
             BASS_SetConfig(DWORD(BASS_CONFIG_NET_META), 0)
-            // Keep default BASS_CONFIG_BUFFER (500ms) for smooth gapless/seek response.
-            BASS_SetConfig(DWORD(BASS_CONFIG_BUFFER), 400)
+            BASS_SetConfig(DWORD(BASS_CONFIG_BUFFER), 250)
             BASS_SetConfig(DWORD(BASS_CONFIG_UPDATEPERIOD), 20)
 
             initialized = true
@@ -205,12 +218,14 @@ final class BassAudioEngine: AudioPlaybackBackend {
                     return false
                 }
             }
+            BASS_SetConfig(DWORD(BASS_CONFIG_IOS_SESSION), 0)
             sessionManager.activateAtStartup(modeOption: lastSettings.sessionMode)
             var code = initBassDeviceLocked(targetHz: max(44100, sessionManager.lastRequestedSampleRateHz), reinit: false)
             if code == BASS_ERROR_ALREADY {
                 _ = BASS_Free()
                 code = initBassDeviceLocked(targetHz: max(44100, sessionManager.lastRequestedSampleRateHz), reinit: false)
             }
+            _ = sessionManager.configurePlaybackSession(modeOption: lastSettings.sessionMode)
             initialized = (code == BASS_OK)
             return initialized
         }
@@ -299,6 +314,8 @@ final class BassAudioEngine: AudioPlaybackBackend {
             }
             self.operationEpoch += 1
             let epoch = self.operationEpoch
+            self.cancelDopWatchdogLocked()
+            self.norampRestoreWorkItem?.cancel()
 
             if let dop = self.dopStream {
                 dop.beginTrailSilenceAndStop(trailMs: self.lastSettings.dopSilenceTrailMs) { [weak self] in
@@ -312,7 +329,7 @@ final class BassAudioEngine: AudioPlaybackBackend {
                         self.isPausedState = true
                         self.isPlayingState = false
                         self.cachedPositionSeconds = dop.currentPositionSeconds()
-                        self.sessionManager.setDopActive(false)
+                        self.sessionManager.setActiveStreamExpectation(isDop: false, expectedRateHz: nil)
                         self.scheduleIdlePauseLocked()
                         let pos = self.cachedPositionSeconds
                         DispatchQueue.main.async {
@@ -328,22 +345,18 @@ final class BassAudioEngine: AudioPlaybackBackend {
                 completion?()
                 return
             }
-            self.slideVolumeOutLocked(stream: self.mixerStream, fadeMs: fadeMs) { [weak self] in
-                guard let self, self.operationEpoch == epoch, self.mixerStream != 0 else {
-                    completion?()
-                    return
-                }
-                self.cachedPositionSeconds = self.computePositionLocked()
-                BASS_ChannelPause(self.mixerStream)
-                self.isPausedState = true
-                self.isPlayingState = false
-                self.scheduleIdlePauseLocked()
-                let pos = self.cachedPositionSeconds
-                self.refreshSignalPathLocked()
-                DispatchQueue.main.async {
-                    self.delegate?.backendDidPause(positionSeconds: pos)
-                    completion?()
-                }
+            self.rampDownAndDrainPcmLocked(stream: self.mixerStream, fadeMs: max(16, fadeMs))
+            self.cachedPositionSeconds = self.computePositionLocked()
+            BASS_ChannelPause(self.mixerStream)
+            self.isPausedState = true
+            self.isPlayingState = false
+            self.sessionManager.setActiveStreamExpectation(isDop: false, expectedRateHz: nil)
+            self.scheduleIdlePauseLocked()
+            let pos = self.cachedPositionSeconds
+            self.refreshSignalPathLocked()
+            DispatchQueue.main.async {
+                self.delegate?.backendDidPause(positionSeconds: pos)
+                completion?()
             }
         }
     }
@@ -355,20 +368,42 @@ final class BassAudioEngine: AudioPlaybackBackend {
                 return
             }
             self.cancelIdlePauseLocked()
-            self.sessionManager.reactivateSession()
+            self.norampRestoreWorkItem?.cancel()
+            self.sessionManager.reactivateSession(modeOption: self.lastSettings.sessionMode)
             self.operationEpoch += 1
-            _ = BASS_Start()
+            if BASS_IsStarted() == 0 {
+                _ = BASS_Start()
+            }
 
             if let dop = self.dopStream {
+                if case .failure(let safetyFailure) = self.sessionManager.validateDopSafety(
+                    carrierHz: dop.carrierRateHz,
+                    userAcknowledged: true
+                ) {
+                    self.teardownStreamsLocked(stopDevice: false)
+                    self.isPlayingState = false
+                    self.isPausedState = false
+                    DispatchQueue.main.async {
+                        if let track = self.activeTrack {
+                            self.delegate?.backendDidFailTrack(
+                                track: track,
+                                code: safetyFailure.code,
+                                message: safetyFailure.message
+                            )
+                        }
+                        completion?()
+                    }
+                    return
+                }
                 let targetCarrier = dop.carrierRateHz
                 let neg = self.sessionManager.negotiateSampleRate(
                     targetHz: targetCarrier,
                     strategy: self.lastSettings.rateSwitchStrategy,
                     settleDelayMs: self.lastSettings.dacSettleDelayMs,
+                    sessionModeOption: self.lastSettings.sessionMode,
                     bassReinit: { [weak self] hz in self?.reinitBassDeviceSampleRateLocked(hz) ?? false }
                 )
                 guard neg.matchedTarget else {
-                    let failure = DopSafetyFailure.carrierRateUnsupported(targetCarrier)
                     self.teardownStreamsLocked(stopDevice: false)
                     self.isPlayingState = false
                     self.isPausedState = false
@@ -380,17 +415,19 @@ final class BassAudioEngine: AudioPlaybackBackend {
                                 message: "恢复 DoP 失败：设备采样率未能锁回 \(targetCarrier) Hz（当前会话 \(neg.sessionActualHz) Hz）。"
                             )
                         }
-                        _ = failure
                         completion?()
                     }
                     return
                 }
                 dop.prepareResumeLeadSilence(ms: self.lastSettings.dopSilenceLeadMs)
+                BASS_SetConfig(DWORD(BASS_CONFIG_GVOL_STREAM), 10000)
                 BASS_ChannelSetAttribute(dop.outputHandle, DWORD(BASS_ATTRIB_VOL), 1.0)
-                if BASS_ChannelPlay(dop.outputHandle, 0) != 0 {
+                // restart=1 clears BASS_STREAMPROC_END from pause trail silence while continuing from decoderHandle's paused offset.
+                if BASS_ChannelPlay(dop.outputHandle, 1) != 0 {
                     self.isPausedState = false
                     self.isPlayingState = true
-                    self.sessionManager.setDopActive(true)
+                    self.sessionManager.setActiveStreamExpectation(isDop: true, expectedRateHz: dop.carrierRateHz)
+                    self.startDopWatchdogLocked(carrierHz: dop.carrierRateHz, dopHandle: dop.outputHandle)
                     self.refreshSignalPathLocked()
                     let sig = self.lastSignalPath
                     if let track = self.activeTrack {
@@ -412,21 +449,26 @@ final class BassAudioEngine: AudioPlaybackBackend {
                 return
             }
             if let sig = self.activeFormat {
+                let targetHz = sig.sampleRateHz
                 _ = self.sessionManager.negotiateSampleRate(
-                    targetHz: sig.sampleRateHz,
+                    targetHz: targetHz,
                     strategy: self.lastSettings.rateSwitchStrategy,
                     settleDelayMs: self.lastSettings.dacSettleDelayMs,
+                    sessionModeOption: self.lastSettings.sessionMode,
                     bassReinit: { [weak self] hz in self?.reinitBassDeviceSampleRateLocked(hz) ?? false }
                 )
             }
-            let clampedFade = max(0, fadeMs)
-            BASS_ChannelSetAttribute(self.mixerStream, DWORD(BASS_ATTRIB_VOL), clampedFade > 0 ? 0.0 : 1.0)
+            let clampedFade = max(16, fadeMs)
+            BASS_ChannelSetAttribute(self.mixerStream, DWORD(BASS_ATTRIB_NORAMP), 0.0)
+            BASS_ChannelSetAttribute(self.mixerStream, DWORD(BASS_ATTRIB_VOL), 0.0)
             if BASS_ChannelPlay(self.mixerStream, 0) != 0 {
-                if clampedFade > 0 {
-                    BASS_ChannelSlideAttribute(self.mixerStream, DWORD(BASS_ATTRIB_VOL), 1.0, DWORD(clampedFade))
-                }
+                BASS_ChannelSlideAttribute(self.mixerStream, DWORD(BASS_ATTRIB_VOL), 1.0, DWORD(clampedFade))
+                self.scheduleRestoreNorampLocked(afterMs: clampedFade + 25)
                 self.isPausedState = false
                 self.isPlayingState = true
+                if let fmt = self.activeFormat {
+                    self.sessionManager.setActiveStreamExpectation(isDop: false, expectedRateHz: fmt.sampleRateHz)
+                }
                 self.refreshSignalPathLocked()
                 let sigSnap = self.lastSignalPath
                 if let track = self.activeTrack {
@@ -513,75 +555,157 @@ final class BassAudioEngine: AudioPlaybackBackend {
                 return
             }
 
+            self.norampRestoreWorkItem?.cancel()
             let wasPlaying = self.isPlayingState && !self.isPausedState
-            let performSeek = { [weak self] in
-                guard let self, self.operationEpoch == epoch,
-                      self.mixerStream != 0, self.activeSource != 0 else {
-                    completion?()
-                    return
-                }
-                let targetBytes = BASS_ChannelSeconds2Bytes(self.activeSource, clampedTarget)
-                if targetBytes != UInt64.max {
-                    BASS_ChannelPause(self.mixerStream)
-                    BASS_Mixer_ChannelSetPosition(
-                        self.activeSource,
-                        targetBytes,
-                        DWORD(BASS_POS_BYTE | BASS_POS_MIXER_RESET)
-                    )
-                    // Flush mixer playback buffer before resuming
-                    BASS_ChannelPlay(self.mixerStream, 1)
-                    if wasPlaying {
-                        let rampMs = max(0, fadeMs)
-                        BASS_ChannelSetAttribute(self.mixerStream, DWORD(BASS_ATTRIB_VOL), rampMs > 0 ? 0.0 : 1.0)
-                        if rampMs > 0 {
-                            BASS_ChannelSlideAttribute(self.mixerStream, DWORD(BASS_ATTRIB_VOL), 1.0, DWORD(rampMs))
-                        }
-                    } else {
-                        BASS_ChannelPause(self.mixerStream)
-                        BASS_ChannelSetAttribute(self.mixerStream, DWORD(BASS_ATTRIB_VOL), 1.0)
-                    }
-                    self.cachedPositionSeconds = clampedTarget
-                    let dur = self.cachedDurationSeconds
-                    DispatchQueue.main.async {
-                        self.delegate?.backendDidUpdatePosition(seconds: clampedTarget, durationSeconds: dur)
-                        completion?()
-                    }
-                } else {
-                    completion?()
-                }
+            if wasPlaying {
+                self.rampDownAndDrainPcmLocked(stream: self.mixerStream, fadeMs: max(16, fadeMs))
             }
 
-            if wasPlaying && fadeMs > 0 {
-                self.slideVolumeOutLocked(stream: self.mixerStream, fadeMs: fadeMs, completion: performSeek)
+            guard self.operationEpoch == epoch,
+                  self.mixerStream != 0, self.activeSource != 0 else {
+                completion?()
+                return
+            }
+
+            let targetBytes = BASS_ChannelSeconds2Bytes(self.activeSource, clampedTarget)
+            if targetBytes != UInt64.max {
+                if wasPlaying {
+                    BASS_ChannelPause(self.mixerStream)
+                }
+                BASS_Mixer_ChannelSetPosition(
+                    self.activeSource,
+                    targetBytes,
+                    DWORD(BASS_POS_BYTE | BASS_POS_MIXER_RESET)
+                )
+                // If seeking backwards from very near EOF, queuedNextSource may have already started feeding
+                // the mixer buffer; refresh it cleanly so the gapless intro is never truncated.
+                if let nextT = self.queuedNextTrack, let activeSig = self.activeFormat {
+                    if self.queuedNextSource != 0,
+                       BASS_Mixer_ChannelGetPosition(self.queuedNextSource, DWORD(BASS_POS_BYTE)) > 0 {
+                        let oldNext = self.queuedNextSource
+                        BASS_Mixer_ChannelRemove(oldNext)
+                        BASS_StreamFree(oldNext)
+                        self.queuedNextSource = 0
+                        self.queuedNextFormat = nil
+                        self.tryQueueCompatibleTrackLocked(nextTrack: nextT, activeSignature: activeSig)
+                    } else if self.queuedNextSource == 0 {
+                        self.tryQueueCompatibleTrackLocked(nextTrack: nextT, activeSignature: activeSig)
+                    }
+                }
+                if wasPlaying {
+                    let rampMs = max(16, fadeMs)
+                    BASS_ChannelSetAttribute(self.mixerStream, DWORD(BASS_ATTRIB_NORAMP), 0.0)
+                    // Set VOL = 0.0 BEFORE BASS_ChannelPlay so zero full-scale frames leak past reset!
+                    BASS_ChannelSetAttribute(self.mixerStream, DWORD(BASS_ATTRIB_VOL), 0.0)
+                    BASS_ChannelPlay(self.mixerStream, 1)
+                    BASS_ChannelSlideAttribute(self.mixerStream, DWORD(BASS_ATTRIB_VOL), 1.0, DWORD(rampMs))
+                    self.scheduleRestoreNorampLocked(afterMs: rampMs + 25)
+                } else {
+                    BASS_ChannelSetAttribute(self.mixerStream, DWORD(BASS_ATTRIB_VOL), 1.0)
+                    BASS_ChannelSetAttribute(
+                        self.mixerStream,
+                        DWORD(BASS_ATTRIB_NORAMP),
+                        self.lastSettings.strictBitPerfectNoRampIn ? 2.0 : 0.0
+                    )
+                }
+                self.cachedPositionSeconds = clampedTarget
+                let dur = self.cachedDurationSeconds
+                DispatchQueue.main.async {
+                    self.delegate?.backendDidUpdatePosition(seconds: clampedTarget, durationSeconds: dur)
+                    completion?()
+                }
             } else {
-                performSeek()
+                completion?()
             }
         }
     }
 
     func emergencySafetyHalt(reason: String) {
         engineQueue.async { [weak self] in
+            self?.emergencySafetyHaltLocked(reason: reason)
+        }
+    }
+
+    func recoverUnexpectedUsbRateDrop(expectedHz: Int) {
+        engineQueue.async { [weak self] in
             guard let self else { return }
-            self.operationEpoch += 1
-            self.pendingOperationWorkItem?.cancel()
-            self.teardownStreamsLocked(stopDevice: true)
-            self.isPlayingState = false
-            self.isPausedState = false
-            self.sessionManager.setDopActive(false)
-            self.lastSignalPath = .idle
-            self.logger.log(
-                event: "emergency-safety-halt",
-                category: "safety",
-                message: "Emergency audio halt triggered: \(reason)"
-            )
-            DispatchQueue.main.async {
-                self.delegate?.backendDidStop(reason: reason)
-                self.delegate?.backendDidUpdateSignalPath(.idle)
+            guard self.dopStream == nil,
+                  self.isPlayingState && !self.isPausedState,
+                  self.mixerStream != 0,
+                  self.activeSource != 0,
+                  let fmt = self.activeFormat,
+                  fmt.sampleRateHz == expectedHz else {
+                return
             }
+            let now = Date()
+            guard now.timeIntervalSince(self.lastRateRecoveryAttempt) >= 2.0 else {
+                return
+            }
+            self.lastRateRecoveryAttempt = now
+
+            let profile = self.sessionManager.currentProfile()
+            guard profile.routeKind == .usbAudio,
+                  (profile.currentSessionSampleRateHz != expectedHz ||
+                   (profile.bassDeviceSampleRateHz > 0 && profile.bassDeviceSampleRateHz != expectedHz)) else {
+                return
+            }
+
+            let savedPos = self.computePositionLocked()
+            self.rampDownAndDrainPcmLocked(stream: self.mixerStream, fadeMs: 12)
+            BASS_ChannelPause(self.mixerStream)
+
+            let neg = self.sessionManager.negotiateSampleRate(
+                targetHz: expectedHz,
+                strategy: self.lastSettings.rateSwitchStrategy,
+                settleDelayMs: self.lastSettings.dacSettleDelayMs,
+                sessionModeOption: self.lastSettings.sessionMode,
+                bassReinit: { [weak self] hz in self?.reinitBassDeviceSampleRateLocked(hz) ?? false }
+            )
+
+            self.logger.log(
+                event: "dac-unexpected-rate-recovery",
+                category: "dac",
+                message: "USB rate drop recovery to \(expectedHz) Hz -> matched=\(neg.matchedTarget) (session=\(neg.sessionActualHz), BASS=\(neg.bassDeviceHz))",
+                fields: neg.toDictionary()
+            )
+
+            let resumeBytes = BASS_ChannelSeconds2Bytes(self.activeSource, max(0, savedPos))
+            if resumeBytes != UInt64.max {
+                BASS_Mixer_ChannelSetPosition(self.activeSource, resumeBytes, DWORD(BASS_POS_BYTE | BASS_POS_MIXER_RESET))
+            }
+            BASS_ChannelSetAttribute(self.mixerStream, DWORD(BASS_ATTRIB_NORAMP), 0.0)
+            BASS_ChannelSetAttribute(self.mixerStream, DWORD(BASS_ATTRIB_VOL), 0.0)
+            if BASS_ChannelPlay(self.mixerStream, 1) != 0 {
+                let rampMs = max(16, self.lastSettings.pcmFadeMs)
+                BASS_ChannelSlideAttribute(self.mixerStream, DWORD(BASS_ATTRIB_VOL), 1.0, DWORD(rampMs))
+                self.scheduleRestoreNorampLocked(afterMs: rampMs + 25)
+            }
+            self.refreshSignalPathLocked()
         }
     }
 
     // MARK: - Private Engine Internals (Called on engineQueue)
+
+    private func emergencySafetyHaltLocked(reason: String) {
+        operationEpoch += 1
+        pendingOperationWorkItem?.cancel()
+        cancelDopWatchdogLocked()
+        norampRestoreWorkItem?.cancel()
+        teardownStreamsLocked(stopDevice: true)
+        isPlayingState = false
+        isPausedState = false
+        sessionManager.setActiveStreamExpectation(isDop: false, expectedRateHz: nil)
+        lastSignalPath = .idle
+        logger.log(
+            event: "emergency-safety-halt",
+            category: "safety",
+            message: "Emergency audio halt triggered: \(reason)"
+        )
+        DispatchQueue.main.async {
+            self.delegate?.backendDidStop(reason: reason)
+            self.delegate?.backendDidUpdateSignalPath(.idle)
+        }
+    }
 
     private func initBassDeviceLocked(targetHz: Int, reinit: Bool) -> Int32 {
         let device: Int32
@@ -609,9 +733,10 @@ final class BassAudioEngine: AudioPlaybackBackend {
 
     private func reinitBassDeviceSampleRateLocked(_ targetHz: Int) -> Bool {
         let currentDev = BASS_GetDevice()
-        guard currentDev != 0 && currentDev != DWORD.max else { return false }
+        let deviceToInit: Int32 = (currentDev != 0 && currentDev != DWORD.max) ? Int32(currentDev) : 1
+        BASS_SetConfig(DWORD(BASS_CONFIG_IOS_SESSION), 0)
         let ok = BASS_Init(
-            Int32(currentDev),
+            deviceToInit,
             DWORD(targetHz),
             DWORD(BASS_DEVICE_FREQ | BASS_DEVICE_REINIT),
             nil,
@@ -623,9 +748,14 @@ final class BassAudioEngine: AudioPlaybackBackend {
                 event: "bass-reinit-rate-failed",
                 category: "dac",
                 message: "BASS_DEVICE_REINIT to \(targetHz) Hz failed: BASS error \(err)",
-                fields: ["targetHz": targetHz, "bassError": err]
+                fields: ["targetHz": targetHz, "bassError": err, "device": deviceToInit]
             )
             return false
+        }
+        _ = sessionManager.configurePlaybackSession(modeOption: lastSettings.sessionMode)
+        _ = sessionManager.setPreferredSampleRateDirect(targetHz)
+        if BASS_IsStarted() == 0 {
+            _ = BASS_Start()
         }
         return true
     }
@@ -646,6 +776,12 @@ final class BassAudioEngine: AudioPlaybackBackend {
     ) {
         if !initialized {
             _ = initialize()
+        }
+
+        // Ensure exclusive AVAudioSession and active output device BEFORE rate negotiation
+        _ = sessionManager.configurePlaybackSession(modeOption: settings.sessionMode)
+        if BASS_IsStarted() == 0 {
+            _ = BASS_Start()
         }
 
         guard let probed = probeFileFormatLocked(track: track, dsdMode: dsdMode, settings: settings) else {
@@ -701,6 +837,7 @@ final class BassAudioEngine: AudioPlaybackBackend {
             targetHz: targetDeviceRateHz,
             strategy: settings.rateSwitchStrategy,
             settleDelayMs: settings.dacSettleDelayMs,
+            sessionModeOption: settings.sessionMode,
             bassReinit: { [weak self] hz in self?.reinitBassDeviceSampleRateLocked(hz) ?? false }
         )
 
@@ -721,6 +858,7 @@ final class BassAudioEngine: AudioPlaybackBackend {
                 targetHz: fallbackRate,
                 strategy: settings.rateSwitchStrategy,
                 settleDelayMs: settings.dacSettleDelayMs,
+                sessionModeOption: settings.sessionMode,
                 bassReinit: { [weak self] hz in self?.reinitBassDeviceSampleRateLocked(hz) ?? false }
             )
             startPcmPipelineLocked(
@@ -784,7 +922,8 @@ final class BassAudioEngine: AudioPlaybackBackend {
             guard let self else { return }
             self.engineQueue.async {
                 guard self.dopStream === dop else { return }
-                self.sessionManager.setDopActive(false)
+                self.cancelDopWatchdogLocked()
+                self.sessionManager.setActiveStreamExpectation(isDop: false, expectedRateHz: nil)
                 self.isPlayingState = false
                 self.isPausedState = false
                 DispatchQueue.main.async {
@@ -808,6 +947,8 @@ final class BassAudioEngine: AudioPlaybackBackend {
         self.cachedPositionSeconds = startPositionSeconds
 
         _ = BASS_Start()
+        BASS_SetConfig(DWORD(BASS_CONFIG_GVOL_STREAM), 10000)
+        BASS_ChannelSetAttribute(dop.outputHandle, DWORD(BASS_ATTRIB_VOL), 1.0)
         if BASS_ChannelPlay(dop.outputHandle, 1) == 0 {
             let err = BASS_ErrorGetCode()
             dop.releaseResources()
@@ -824,7 +965,8 @@ final class BassAudioEngine: AudioPlaybackBackend {
 
         self.isPlayingState = true
         self.isPausedState = false
-        self.sessionManager.setDopActive(true)
+        self.sessionManager.setActiveStreamExpectation(isDop: true, expectedRateHz: dop.carrierRateHz)
+        self.startDopWatchdogLocked(carrierHz: dop.carrierRateHz, dopHandle: dop.outputHandle)
         self.refreshSignalPathLocked()
         let sigSnap = self.lastSignalPath
         DispatchQueue.main.async {
@@ -877,18 +1019,26 @@ final class BassAudioEngine: AudioPlaybackBackend {
             return
         }
 
-        if settings.strictBitPerfectNoRampIn {
-            BASS_ChannelSetAttribute(mixer, DWORD(BASS_ATTRIB_NORAMP), 1.0)
-        }
-        BASS_ChannelSetAttribute(mixer, DWORD(BASS_ATTRIB_VOL), 1.0)
+        BASS_SetConfig(DWORD(BASS_CONFIG_GVOL_STREAM), 10000)
         BASS_ChannelSetAttribute(mixer, DWORD(BASS_ATTRIB_MIXER_VOL), 1.0)
         BASS_ChannelSetAttribute(mixer, DWORD(BASS_ATTRIB_PAN), 0.0)
 
-        if startPositionSeconds > 0 {
+        let nonZeroStartFade = startPositionSeconds > 0.005
+        if nonZeroStartFade {
             let startBytes = BASS_ChannelSeconds2Bytes(srcHandle, startPositionSeconds)
             if startBytes != UInt64.max {
                 BASS_ChannelSetPosition(srcHandle, startBytes, DWORD(BASS_POS_BYTE))
             }
+            BASS_ChannelSetAttribute(mixer, DWORD(BASS_ATTRIB_NORAMP), 0.0)
+            BASS_ChannelSetAttribute(mixer, DWORD(BASS_ATTRIB_VOL), 0.0)
+        } else {
+            // BASS_ATTRIB_NORAMP = 2 disables ramp-in ONLY so sample 0 is 100% bit-exact while keeping BASS ramp-out intact.
+            BASS_ChannelSetAttribute(
+                mixer,
+                DWORD(BASS_ATTRIB_NORAMP),
+                settings.strictBitPerfectNoRampIn ? 2.0 : 0.0
+            )
+            BASS_ChannelSetAttribute(mixer, DWORD(BASS_ATTRIB_VOL), 1.0)
         }
 
         let chanFlags = DWORD(BASS_MIXER_CHAN_NORAMPIN | BASS_MIXER_CHAN_AUTOFREE)
@@ -945,9 +1095,15 @@ final class BassAudioEngine: AudioPlaybackBackend {
             return
         }
 
+        if nonZeroStartFade {
+            let rampMs = max(16, settings.pcmFadeMs)
+            BASS_ChannelSlideAttribute(mixer, DWORD(BASS_ATTRIB_VOL), 1.0, DWORD(rampMs))
+            self.scheduleRestoreNorampLocked(afterMs: rampMs + 25)
+        }
+
         self.isPlayingState = true
         self.isPausedState = false
-        self.sessionManager.setDopActive(false)
+        self.sessionManager.setActiveStreamExpectation(isDop: false, expectedRateHz: mixerFreq)
         self.refreshSignalPathLocked()
         let sigSnap = self.lastSignalPath
         DispatchQueue.main.async {
@@ -957,9 +1113,17 @@ final class BassAudioEngine: AudioPlaybackBackend {
 
     private func tryQueueCompatibleTrackLocked(nextTrack: TrackSpec, activeSignature: AudioFormatSignature) {
         guard mixerStream != 0, !activeSignature.isDsd, !activeSignature.isDop else { return }
-        guard let nextProbe = probeFileFormatLocked(track: nextTrack, dsdMode: .pcm, settings: lastSettings),
-              AudioFormatSignature.isGaplessCompatible(lhs: activeSignature, rhs: nextProbe),
-              let nextSrc = openDecodingStreamLocked(track: nextTrack, forceDsdToPcmRate: nil) else {
+        guard !nextTrack.isPrePackagedDopWav else { return }
+        let ext = URL(fileURLWithPath: nextTrack.filePath).pathExtension.lowercased()
+        guard ext != "dsf" && ext != "dff" else { return }
+
+        // Open once with BASS_ASYNCFILE and attach directly if compatible (no double-open stall at seam).
+        guard let nextSrc = openDecodingStreamLocked(track: nextTrack, forceDsdToPcmRate: nil) else {
+            return
+        }
+        guard let nextSig = inspectChannelSignatureLocked(handle: nextSrc),
+              AudioFormatSignature.isGaplessCompatible(lhs: activeSignature, rhs: nextSig) else {
+            BASS_StreamFree(nextSrc)
             return
         }
 
@@ -967,13 +1131,13 @@ final class BassAudioEngine: AudioPlaybackBackend {
         if BASS_Mixer_StreamAddChannel(mixerStream, nextSrc, chanFlags) != 0 {
             queuedNextSource = nextSrc
             queuedNextTrack = nextTrack
-            queuedNextFormat = nextProbe
-            installSourceEndSyncLocked(sourceHandle: nextSrc, track: nextTrack, signature: nextProbe)
+            queuedNextFormat = nextSig
+            installSourceEndSyncLocked(sourceHandle: nextSrc, track: nextTrack, signature: nextSig)
             logger.log(
                 event: "gapless-queued",
                 category: "gapless",
-                message: "Queued compatible next track \(nextTrack.fileName) (\(nextProbe.sampleRateHz) Hz / \(nextProbe.channels)ch)",
-                fields: ["nextFile": nextTrack.fileName, "rateHz": nextProbe.sampleRateHz]
+                message: "Queued compatible next track \(nextTrack.fileName) (\(nextSig.sampleRateHz) Hz / \(nextSig.channels)ch)",
+                fields: ["nextFile": nextTrack.fileName, "rateHz": nextSig.sampleRateHz]
             )
         } else {
             BASS_StreamFree(nextSrc)
@@ -1035,7 +1199,9 @@ final class BassAudioEngine: AudioPlaybackBackend {
                     self.delegate?.backendDidAdvanceGaplessly(to: nextTrack, signalPath: sigSnap)
                 }
             } else {
-                // No compatible next track queued -> pause mixer cleanly (BASS_MIXER_NONSTOP stays silent)
+                // No compatible next track queued: allow BASS_MIXER_NONSTOP to push 30ms digital zeros before switching rate
+                Thread.sleep(forTimeInterval: 0.030)
+                self.sessionManager.setActiveStreamExpectation(isDop: false, expectedRateHz: nil)
                 self.isPlayingState = false
                 self.isPausedState = false
                 self.activeSource = 0
@@ -1044,6 +1210,26 @@ final class BassAudioEngine: AudioPlaybackBackend {
                 }
             }
         }
+    }
+
+    private func inspectChannelSignatureLocked(handle: HSTREAM) -> AudioFormatSignature? {
+        var info = BASS_CHANNELINFO()
+        guard BASS_ChannelGetInfo(handle, &info) != 0 else { return nil }
+        let isDsd = info.ctype == DWORD(BASS_CTYPE_STREAM_DSD)
+        var dsdRateFloat: Float = 0
+        if isDsd {
+            _ = BASS_ChannelGetAttribute(handle, DWORD(BASS_ATTRIB_DSD_RATE), &dsdRateFloat)
+        }
+        let bits = Int(info.origres & 0xFFFF)
+        return AudioFormatSignature(
+            sampleRateHz: Int(info.freq),
+            channels: Int(info.chans),
+            validBits: isDsd ? 1 : (bits > 0 ? bits : 16),
+            isDsd: isDsd,
+            dsdRateHz: Int(dsdRateFloat.rounded()),
+            isDop: false,
+            codecName: Self.codecName(from: info.ctype)
+        )
     }
 
     private func probeFileFormatLocked(
@@ -1101,23 +1287,7 @@ final class BassAudioEngine: AudioPlaybackBackend {
 
         guard let h = openDecodingStreamLocked(track: track, forceDsdToPcmRate: nil) else { return nil }
         defer { BASS_StreamFree(h) }
-        var info = BASS_CHANNELINFO()
-        guard BASS_ChannelGetInfo(h, &info) != 0 else { return nil }
-        let isDsd = info.ctype == DWORD(BASS_CTYPE_STREAM_DSD)
-        var dsdRateFloat: Float = 0
-        if isDsd {
-            _ = BASS_ChannelGetAttribute(h, DWORD(BASS_ATTRIB_DSD_RATE), &dsdRateFloat)
-        }
-        let bits = Int(info.origres & 0xFFFF)
-        return AudioFormatSignature(
-            sampleRateHz: Int(info.freq),
-            channels: Int(info.chans),
-            validBits: isDsd ? 1 : (bits > 0 ? bits : 16),
-            isDsd: isDsd,
-            dsdRateHz: Int(dsdRateFloat.rounded()),
-            isDop: false,
-            codecName: Self.codecName(from: info.ctype)
-        )
+        return inspectChannelSignatureLocked(handle: h)
     }
 
     private func openDecodingStreamLocked(track: TrackSpec, forceDsdToPcmRate: Int?) -> HSTREAM? {
@@ -1133,12 +1303,16 @@ final class BassAudioEngine: AudioPlaybackBackend {
                     DWORD(targetRate)
                 )
             } else {
+                var flags = DWORD(BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT | BASS_ASYNCFILE)
+                if ext == "mp3" || ext == "ogg" || ext == "aac" {
+                    flags |= DWORD(BASS_STREAM_PRESCAN)
+                }
                 return BASS_StreamCreateFile(
                     DWORD(BASS_FILE_NAME),
                     cPath,
                     0,
                     0,
-                    DWORD(BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT | BASS_STREAM_PRESCAN)
+                    flags
                 )
             }
         }
@@ -1153,23 +1327,91 @@ final class BassAudioEngine: AudioPlaybackBackend {
         return preferred
     }
 
-    private func slideVolumeOutLocked(stream: HSTREAM, fadeMs: Int, completion: @escaping () -> Void) {
+    private func rampDownAndDrainPcmLocked(stream: HSTREAM, fadeMs: Int) {
+        guard stream != 0 else { return }
+        BASS_ChannelSetAttribute(stream, DWORD(BASS_ATTRIB_NORAMP), 0.0)
         let clamped = max(0, fadeMs)
-        if clamped == 0 {
-            completion()
-            return
+        if clamped > 0 {
+            BASS_ChannelSlideAttribute(stream, DWORD(BASS_ATTRIB_VOL), 0.0, DWORD(clamped))
+            var waitMs = 0
+            let maxWait = clamped + 30
+            while BASS_ChannelIsSliding(stream, DWORD(BASS_ATTRIB_VOL)) != 0 && waitMs < maxWait {
+                Thread.sleep(forTimeInterval: 0.004)
+                waitMs += 4
+            }
+        } else {
+            BASS_ChannelSetAttribute(stream, DWORD(BASS_ATTRIB_VOL), 0.0)
         }
-        BASS_ChannelSlideAttribute(stream, DWORD(BASS_ATTRIB_VOL), 0.0, DWORD(clamped))
+        // Let CoreAudio consume one mixer update period (20ms) of zeroed tail before stopping/pausing.
+        Thread.sleep(forTimeInterval: 0.022)
+    }
+
+    private func scheduleRestoreNorampLocked(afterMs: Int) {
+        norampRestoreWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
-            _ = self
-            completion()
+            guard let self, self.mixerStream != 0, self.isPlayingState && !self.isPausedState else { return }
+            let val: Float = self.lastSettings.strictBitPerfectNoRampIn ? 2.0 : 0.0
+            BASS_ChannelSetAttribute(self.mixerStream, DWORD(BASS_ATTRIB_NORAMP), val)
         }
-        pendingOperationWorkItem?.cancel()
-        pendingOperationWorkItem = item
-        engineQueue.asyncAfter(deadline: .now() + .milliseconds(clamped + 6), execute: item)
+        norampRestoreWorkItem = item
+        engineQueue.asyncAfter(deadline: .now() + .milliseconds(max(10, afterMs)), execute: item)
+    }
+
+    private func startDopWatchdogLocked(carrierHz: Int, dopHandle: HSTREAM) {
+        cancelDopWatchdogLocked()
+        let timer = DispatchSource.makeTimerSource(queue: engineQueue)
+        timer.schedule(deadline: .now() + 0.1, repeating: 0.1)
+        timer.setEventHandler { [weak self] in
+            guard let self, self.isPlayingState && !self.isPausedState,
+                  let currentDop = self.dopStream, currentDop.outputHandle == dopHandle else {
+                self?.cancelDopWatchdogLocked()
+                return
+            }
+            let profile = self.sessionManager.currentProfile()
+            var violation: DopSafetyFailure?
+            if profile.routeKind != .usbAudio {
+                violation = .nonUsbRoute(profile.routeKind)
+            } else if profile.outputVolume < 0.999 {
+                violation = .systemVolumeNotFull(profile.outputVolume)
+            } else if profile.currentSessionSampleRateHz != carrierHz ||
+                        (profile.bassDeviceSampleRateHz > 0 && profile.bassDeviceSampleRateHz != carrierHz) {
+                let actual = profile.currentSessionSampleRateHz != carrierHz
+                    ? profile.currentSessionSampleRateHz
+                    : profile.bassDeviceSampleRateHz
+                violation = .midStreamRateDrop(expectedHz: carrierHz, actualHz: actual)
+            } else {
+                var chVol: Float = 1.0
+                _ = BASS_ChannelGetAttribute(dopHandle, DWORD(BASS_ATTRIB_VOL), &chVol)
+                let globalVol = BASS_GetConfig(DWORD(BASS_CONFIG_GVOL_STREAM))
+                if abs(chVol - 1.0) > 0.001 || globalVol != 10000 {
+                    BASS_SetConfig(DWORD(BASS_CONFIG_GVOL_STREAM), 10000)
+                    BASS_ChannelSetAttribute(dopHandle, DWORD(BASS_ATTRIB_VOL), 1.0)
+                    violation = .midStreamRateDrop(expectedHz: carrierHz, actualHz: profile.currentSessionSampleRateHz)
+                }
+            }
+
+            if let v = violation {
+                self.logger.log(
+                    event: "dop-watchdog-halt",
+                    category: "safety",
+                    message: v.message,
+                    fields: ["code": v.code, "sessionHz": profile.currentSessionSampleRateHz, "bassHz": profile.bassDeviceSampleRateHz, "vol": profile.outputVolume]
+                )
+                self.emergencySafetyHaltLocked(reason: v.code)
+            }
+        }
+        dopWatchdogTimer = timer
+        timer.resume()
+    }
+
+    private func cancelDopWatchdogLocked() {
+        dopWatchdogTimer?.cancel()
+        dopWatchdogTimer = nil
     }
 
     private func fadeOutAndTeardownLocked(fadeMs: Int, dopTrailMs: Int, completion: @escaping () -> Void) {
+        cancelDopWatchdogLocked()
+        norampRestoreWorkItem?.cancel()
         if let dop = dopStream {
             dop.beginTrailSilenceAndStop(trailMs: dopTrailMs) { [weak self] in
                 self?.engineQueue.async {
@@ -1179,18 +1421,16 @@ final class BassAudioEngine: AudioPlaybackBackend {
             }
             return
         }
-        if mixerStream != 0 && isPlayingState && !isPausedState && fadeMs > 0 {
-            slideVolumeOutLocked(stream: mixerStream, fadeMs: fadeMs) { [weak self] in
-                self?.teardownStreamsLocked(stopDevice: false)
-                completion()
-            }
-            return
+        if mixerStream != 0 && isPlayingState && !isPausedState {
+            rampDownAndDrainPcmLocked(stream: mixerStream, fadeMs: max(16, fadeMs))
         }
         teardownStreamsLocked(stopDevice: false)
         completion()
     }
 
     private func teardownStreamsLocked(stopDevice: Bool) {
+        cancelDopWatchdogLocked()
+        norampRestoreWorkItem?.cancel()
         if let dop = dopStream {
             dop.releaseResources()
             dopStream = nil
@@ -1204,7 +1444,7 @@ final class BassAudioEngine: AudioPlaybackBackend {
         queuedNextSource = 0
         queuedNextTrack = nil
         queuedNextFormat = nil
-        sessionManager.setDopActive(false)
+        sessionManager.setActiveStreamExpectation(isDop: false, expectedRateHz: nil)
         if stopDevice {
             _ = BASS_Pause()
         }
@@ -1218,6 +1458,7 @@ final class BassAudioEngine: AudioPlaybackBackend {
         activeTrack = nil
         activeFormat = nil
         lastSignalPath = .idle
+        sessionManager.setActiveStreamExpectation(isDop: false, expectedRateHz: nil)
         scheduleIdlePauseLocked()
         DispatchQueue.main.async {
             self.delegate?.backendDidStop(reason: reason)
@@ -1232,11 +1473,11 @@ final class BassAudioEngine: AudioPlaybackBackend {
             guard let self else { return }
             if !self.isPlayingState {
                 _ = BASS_Pause()
-                self.logger.log(event: "bass-idle-paused", category: "power", message: "BASS device paused after idle timeout")
+                self.logger.log(event: "bass-idle-paused", category: "power", message: "BASS device paused after 30s idle timeout")
             }
         }
         idlePauseWorkItem = item
-        engineQueue.asyncAfter(deadline: .now() + 3.0, execute: item)
+        engineQueue.asyncAfter(deadline: .now() + 30.0, execute: item)
     }
 
     private func cancelIdlePauseLocked() {
@@ -1335,7 +1576,7 @@ final class BassAudioEngine: AudioPlaybackBackend {
             engineOutputChannels: fmt.channels,
             engineFloatPrecision: isDop ? "24-bit DoP over IEEE Float32" : "IEEE Float32 (24-bit exact integer mantissa)",
             engineVolumeGain: 1.0,
-            mixerFlags: isDop ? "BASS_DSD_DOP|NORAMP|DOWNMIX=0" : "BASS_MIXER_QUEUE|NONSTOP|POSEX|NORAMPIN",
+            mixerFlags: isDop ? "BASS_DSD_DOP|NORAMP=1|DOWNMIX=0" : "BASS_MIXER_QUEUE|NONSTOP|POSEX|NORAMPIN|NORAMP=2",
             gaplessNextTrackQueued: queuedNextSource != 0,
             gaplessNextTrackName: queuedNextTrack?.fileName,
             sessionCategory: "AVAudioSessionCategoryPlayback",

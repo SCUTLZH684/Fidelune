@@ -4,6 +4,7 @@ import Foundation
 protocol AudioSessionAdapter: AnyObject {
     var category: AVAudioSession.Category { get }
     var mode: AVAudioSession.Mode { get }
+    var categoryOptions: AVAudioSession.CategoryOptions { get }
     var sampleRate: Double { get }
     var preferredSampleRate: Double { get }
     var outputNumberOfChannels: Int { get }
@@ -34,6 +35,7 @@ final class SystemAudioSessionAdapter: AudioSessionAdapter {
 
     var category: AVAudioSession.Category { session.category }
     var mode: AVAudioSession.Mode { session.mode }
+    var categoryOptions: AVAudioSession.CategoryOptions { session.categoryOptions }
     var sampleRate: Double { session.sampleRate }
     var preferredSampleRate: Double { session.preferredSampleRate }
     var outputNumberOfChannels: Int { session.outputNumberOfChannels }
@@ -112,4 +114,5 @@ protocol AudioPlaybackBackend: AnyObject {
     func stop(immediate: Bool, fadeMs: Int, reason: String?, completion: (() -> Void)?)
     func seek(to seconds: Double, fadeMs: Int, completion: (() -> Void)?)
     func emergencySafetyHalt(reason: String)
+    func recoverUnexpectedUsbRateDrop(expectedHz: Int)
 }

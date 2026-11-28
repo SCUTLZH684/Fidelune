@@ -14,7 +14,7 @@ import wave
 
 
 ROOT = Path(__file__).resolve().parents[1] / "fixtures"
-PCM_LADDER_RATES = [44100, 48000, 88200, 96000, 176400, 192000, 384000]
+PCM_LADDER_RATES = [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000]
 
 
 def ffmpeg(*args: object) -> bytes:
@@ -212,10 +212,15 @@ def generate() -> None:
                 "source_valid_bits": bits if lossless else None,
             }
 
-        # 1. PCM FLAC sample-rate ladder (6s each up to 192k, 3s for 384k)
+        # 1. PCM FLAC sample-rate ladder (12s for 96k hold/hotplug/interrupt tests, 3s for >=352.8k, 6s otherwise)
         for rate in PCM_LADDER_RATES:
             bits = 16 if rate == 44100 else 24
-            secs = 3 if rate == 384000 else 6
+            if rate == 96000:
+                secs = 12
+            elif rate >= 352800:
+                secs = 3
+            else:
+                secs = 6
             sample(f"flac{rate}.flac", rate, bits, 2, rate * secs)
 
         # 2. Multi-format, bit-depth & channel layout coverage
@@ -236,23 +241,23 @@ def generate() -> None:
         sample("short.wav", 48000, 24, 2, 4800)  # 100 ms
         sample("silence-edge.wav", 48000, 24, 2, 48000 * 2, tone(48000, 24, 2, 96000, edge=True))
 
-        # 5. Gapless 44.1 kHz / 16-bit pair (non-zero cut at frame 44,137)
+        # 5. Gapless 44.1 kHz / 16-bit pair (6s total, non-zero cut at frame 132,337)
         r44 = 44100
-        sig44 = tone(r44, 16, 2, 2 * r44)
-        cut44 = (r44 + 37) * 4
+        sig44 = tone(r44, 16, 2, 6 * r44)
+        cut44 = (3 * r44 + 37) * 4
         assert any(sig44[cut44 - 4:cut44]) and any(sig44[cut44:cut44 + 4])
-        sample("continuous.wav", r44, 16, 2, 2 * r44, sig44)
+        sample("continuous.wav", r44, 16, 2, 6 * r44, sig44)
         sample("gap-a.wav", r44, 16, 2, cut44 // 4, sig44[:cut44])
         sample("gap-b.wav", r44, 16, 2, (len(sig44) - cut44) // 4, sig44[cut44:])
         with wave.open(str(ROOT / "gap-a.wav"), "rb") as a, wave.open(str(ROOT / "gap-b.wav"), "rb") as b:
             assert a.readframes(a.getnframes()) + b.readframes(b.getnframes()) == sig44
 
-        # 6. Gapless 96 kHz / 24-bit FLAC pair (non-zero cut at frame 96,037)
+        # 6. Gapless 96 kHz / 24-bit FLAC pair (6s total, non-zero cut at frame 288,073)
         r96 = 96000
-        sig96 = tone(r96, 24, 2, 2 * r96)
-        cut96 = (r96 + 37) * 6  # 2ch * 3 bytes = 6 bytes/frame
+        sig96 = tone(r96, 24, 2, 6 * r96)
+        cut96 = (3 * r96 + 73) * 6  # 2ch * 3 bytes = 6 bytes/frame
         assert any(sig96[cut96 - 6:cut96]) and any(sig96[cut96:cut96 + 6])
-        sample("continuous96.flac", r96, 24, 2, 2 * r96, sig96)
+        sample("continuous96.flac", r96, 24, 2, 6 * r96, sig96)
         sample("gap96-a.flac", r96, 24, 2, cut96 // 6, sig96[:cut96])
         sample("gap96-b.flac", r96, 24, 2, (len(sig96) - cut96) // 6, sig96[cut96:])
 
@@ -262,9 +267,9 @@ def generate() -> None:
         (ROOT / "invalid.flac").write_bytes(b"Fidelune BASS intentional non-audio fixture 1\n")
         (ROOT / "invalid-2.flac").write_bytes(b"Fidelune BASS intentional non-audio fixture 2\n")
 
-        # 8. DSD64, DSD128 & pre-packaged DoP64 WAV carrier
-        write_dsd_pair(2822400, 3, "dsd64.dsf", "dop64.wav")
-        write_dsd_pair(5644800, 2, "dsd128.dsf", None)
+        # 8. DSD64 (6s for comfortable hardware lock/watchdog timing), DSD128 (3s) & pre-packaged DoP64 WAV
+        write_dsd_pair(2822400, 6, "dsd64.dsf", "dop64.wav")
+        write_dsd_pair(5644800, 3, "dsd128.dsf", None)
 
     # Probe and index every generated file
     sources: dict[str, dict] = {}

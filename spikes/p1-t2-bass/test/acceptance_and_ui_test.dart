@@ -8,6 +8,7 @@ import 'package:fidelune_bass/main.dart';
 import 'package:fidelune_bass/models/audio_models.dart';
 import 'package:fidelune_bass/screens/acceptance_home_screen.dart';
 import 'package:fidelune_bass/screens/dac_monitor_screen.dart';
+import 'package:fidelune_bass/screens/test_item_detail_screen.dart';
 import 'package:fidelune_bass/widgets/dop_safety_dialog.dart';
 import 'package:fidelune_bass/widgets/signal_path_card.dart';
 
@@ -38,6 +39,7 @@ class FakeAudioEngineGateway implements AudioEngineGateway {
   PlaybackStateSnapshot _state;
   String? persistedAcceptanceJson;
   final List<String> actions = [];
+  final List<DsdOutputMode?> playQueueDsdModes = [];
   bool dopAcknowledged = false;
 
   final List<TrackSpec> _fixtures = const [
@@ -56,6 +58,38 @@ class FakeAudioEngineGateway implements AudioEngineGateway {
       album: 'FLAC',
       filePath: '/tmp/poptest-b.flac',
       fileName: 'poptest-b.flac',
+    ),
+    TrackSpec(
+      id: 'gap-a.wav',
+      title: 'gap-a.wav',
+      artist: 'Test',
+      album: 'WAV',
+      filePath: '/tmp/gap-a.wav',
+      fileName: 'gap-a.wav',
+    ),
+    TrackSpec(
+      id: 'gap-b.wav',
+      title: 'gap-b.wav',
+      artist: 'Test',
+      album: 'WAV',
+      filePath: '/tmp/gap-b.wav',
+      fileName: 'gap-b.wav',
+    ),
+    TrackSpec(
+      id: 'continuous.wav',
+      title: 'continuous.wav',
+      artist: 'Test',
+      album: 'WAV',
+      filePath: '/tmp/continuous.wav',
+      fileName: 'continuous.wav',
+    ),
+    TrackSpec(
+      id: 'flac352800.flac',
+      title: 'flac352800.flac',
+      artist: 'Test',
+      album: 'FLAC',
+      filePath: '/tmp/flac352800.flac',
+      fileName: 'flac352800.flac',
     ),
     TrackSpec(
       id: 'dsd64.dsf',
@@ -95,6 +129,14 @@ class FakeAudioEngineGateway implements AudioEngineGateway {
         summary: 'OK',
         details: {},
       ),
+      SelfTestResult(
+        id: 'auto_dop_passthrough_integrity',
+        title: 'DoP 自定义流零丢帧',
+        passed: true,
+        durationMs: 25,
+        summary: 'OK',
+        details: {},
+      ),
     ];
   }
 
@@ -106,6 +148,7 @@ class FakeAudioEngineGateway implements AudioEngineGateway {
     DsdOutputMode? dsdMode,
   }) async {
     actions.add('playQueue:${tracks.length}');
+    playQueueDsdModes.add(dsdMode);
     _state = PlaybackStateSnapshot(
       isPlaying: true,
       durationSeconds: 6,
@@ -202,8 +245,28 @@ class FakeAudioEngineGateway implements AudioEngineGateway {
       matchedTarget: true,
       routeKind: 'USBAudio',
       strategyUsed: 'hybrid',
-      settleElapsedMs: 180,
+      settleElapsedMs: 80,
+      phaseReached: 'phase2_bassReinit',
     );
+  }
+
+  @override
+  Future<List<DacProbeResult>> runUsbDacRateSweep() async {
+    actions.add('runUsbDacRateSweep');
+    return const [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000]
+        .map(
+          (hz) => DacProbeResult(
+            requestedHz: hz,
+            sessionActualHz: hz,
+            bassDeviceHz: hz,
+            matchedTarget: true,
+            routeKind: 'USBAudio',
+            strategyUsed: 'hybrid',
+            settleElapsedMs: 80,
+            phaseReached: 'phase2_bassReinit',
+          ),
+        )
+        .toList();
   }
 
   @override
@@ -232,44 +295,66 @@ class FakeAudioEngineGateway implements AudioEngineGateway {
 }
 
 void main() {
-  test('AcceptanceController persists state, supports retry & checkpoint resume', () async {
+  test('AcceptanceController persists T1-T7 state, enforces blocking tags & 352.8k requirement', () async {
     final gateway = FakeAudioEngineGateway();
     final controller = AcceptanceController(gateway);
 
-    expect(controller.nextPendingItem()?.id, acceptanceCatalog.first.id);
+    expect(controller.nextPendingItem()?.id, 'T1');
+    expect(controller.totalManualCount, 7);
 
-    await controller.runAutomatedChecks();
-    expect(controller.passedAutoCount, 1);
+    // T2 checklist must include 352800 Hz
+    final t2 = acceptanceCatalog.firstWhere((e) => e.id == 'T2');
+    expect(t2.dacRateChecklistHz, contains(352800));
 
+    // Blocking defect tag must prevent markResult(..., passed) from producing a passed status
     await controller.markResult(
-      itemId: 'H1',
-      status: TestItemStatus.failed,
+      itemId: 'T1',
+      status: TestItemStatus.passed,
       selectedTags: ['暂停爆音'],
-      notes: '第1次测',
+      notes: '故意传 passed 测试拦截',
       routeName: 'Speaker',
     );
-    expect(controller.recordFor('H1').attempts, 1);
-    // Still pending H2 next
-    expect(controller.nextPendingItem()?.id, 'H2');
+    expect(controller.recordFor('T1').status, TestItemStatus.failed);
+    expect(controller.passedManualCount, 0);
 
-    // Retry H1 and pass
-    await controller.markResult(itemId: 'H1', status: TestItemStatus.passed, notes: '已修复');
-    expect(controller.recordFor('H1').attempts, 2);
-    expect(controller.passedManualCount, 1);
+    // Next pending moves to T2, while failed T1 stays failed until retried cleanly
+    expect(controller.nextPendingItem()?.id, 'T2');
 
-    // Reload into fresh controller from saved JSON
+    // Retry T1 cleanly with empty tags -> passes
+    await controller.markResult(
+      itemId: 'T1',
+      status: TestItemStatus.passed,
+      selectedTags: [],
+      notes: '已复测无爆音',
+    );
+    expect(controller.recordFor('T1').attempts, 2);
+    expect(controller.recordFor('T1').status, TestItemStatus.passed);
+
+    // T2 passBlockReason rejects missing 352800 Hz or non-matching frequency
+    final partialObs = {
+      for (final hz in [44100, 48000, 88200, 96000, 176400, 192000, 384000]) hz: '匹配',
+    };
+    expect(
+      controller.passBlockReason(item: t2, selectedTags: const [], dacRateObservations: partialObs),
+      contains('352.8 kHz'),
+    );
+    final allObs = {...partialObs, 352800: '匹配'};
+    expect(
+      controller.passBlockReason(item: t2, selectedTags: const [], dacRateObservations: allObs),
+      isNull,
+    );
+
+    await controller.runAutomatedChecks();
+    expect(controller.passedAutoCount, 2);
+
+    // Reload from JSON
     final reloaded = AcceptanceController(gateway);
     await reloaded.loadPersistedState();
-    expect(reloaded.recordFor('H1').status, TestItemStatus.passed);
-    expect(reloaded.recordFor('H1').attempts, 2);
-    expect(reloaded.passedAutoCount, 1);
-
-    final md = reloaded.toMarkdownReport(const PlaybackStateSnapshot());
-    expect(md, contains('Fidelune BASS 真机集中验收报告'));
-    expect(md, contains('H1'));
+    expect(reloaded.recordFor('T1').status, TestItemStatus.passed);
+    expect(reloaded.passedAutoCount, 2);
   });
 
-  testWidgets('DopSafetyDialog blocks unlock without USB DAC + 100% volume + 3 checks', (tester) async {
+  testWidgets('DopSafetyDialog requires USB DAC + 100% volume + 4 checks incl. headphone disconnect', (tester) async {
     const lowVolUsb = DacProfile(
       deviceName: 'TOPPING DX5 II',
       portType: 'USBAudio',
@@ -295,8 +380,9 @@ void main() {
     final unlockFinder = find.widgetWithText(FilledButton, '确认安全并解锁 DoP');
     expect(tester.widget<FilledButton>(unlockFinder).onPressed, isNull);
 
-    // Check all 3 boxes — still blocked because volume is 80%
-    for (var i = 0; i < 3; i++) {
+    // 4 checkboxes checked — still blocked because volume is 80%
+    expect(find.byType(CheckboxListTile), findsNWidgets(4));
+    for (var i = 0; i < 4; i++) {
       final cb = find.byType(CheckboxListTile).at(i);
       await tester.ensureVisible(cb);
       await tester.tap(cb);
@@ -304,7 +390,7 @@ void main() {
     await tester.pump();
     expect(tester.widget<FilledButton>(unlockFinder).onPressed, isNull);
 
-    // Now test USB DAC at 100% volume + all 3 boxes checked -> enabled
+    // USB DAC + 100% volume + 3 of 4 checkboxes -> still blocked until 4th checkbox is checked
     const fullVolUsb = DacProfile(
       deviceName: 'TOPPING DX5 II',
       portType: 'USBAudio',
@@ -331,6 +417,12 @@ void main() {
       await tester.ensureVisible(cb);
       await tester.tap(cb);
     }
+    await tester.pump();
+    expect(tester.widget<FilledButton>(unlockFinder).onPressed, isNull);
+
+    final cb4 = find.byType(CheckboxListTile).at(3);
+    await tester.ensureVisible(cb4);
+    await tester.tap(cb4);
     await tester.pump();
     expect(tester.widget<FilledButton>(unlockFinder).onPressed, isNotNull);
   });
@@ -372,52 +464,86 @@ void main() {
     expect(find.textContaining('系统不可读'), findsOneWidget);
   });
 
-  testWidgets('FideluneBassApp navigates tabs, runs auto checks, and records H1 pass', (tester) async {
+  testWidgets('Targeted retest UI enforces blocking-tag lock & T6 explicit DoP low-volume action', (tester) async {
     final gateway = FakeAudioEngineGateway();
     await tester.pumpWidget(FideluneBassApp(gateway: gateway));
     await tester.pumpAndSettle();
 
-    expect(find.text('BASS 音频与 DAC 集中验收'), findsOneWidget);
+    expect(find.text('BASS 定向修复与核心复测 (Build #8)'), findsOneWidget);
 
-    await tester.tap(find.text('一键运行 9 项自动校验'));
+    await tester.tap(find.text('一键运行 10 项自动校验'));
     await tester.pumpAndSettle();
     expect(gateway.actions, contains('runAutomatedSelfTests'));
 
-    // Enter H1 detail screen (scroll into view first on small test viewports)
-    final h1Finder = find.text('扬声器防爆音：暂停、继续、拖动进度与手动切歌');
+    // Enter T1 detail screen
+    final t1Finder = find.text('扬声器防爆音（暂停/拖动/切歌）与同规格 A/B 真无缝');
     final homeScroll = find.descendant(
       of: find.byType(AcceptanceHomeScreen),
       matching: find.byType(Scrollable),
     );
-    await tester.scrollUntilVisible(h1Finder, 200, scrollable: homeScroll);
+    await tester.scrollUntilVisible(t1Finder, 200, scrollable: homeScroll);
     await tester.pumpAndSettle();
-    await tester.tap(h1Finder);
+    await tester.tap(t1Finder);
     await tester.pumpAndSettle();
-    final launchBtn = find.text('启动本项测试音频 (2 首)');
-    await tester.ensureVisible(launchBtn);
-    await tester.pumpAndSettle();
-    expect(launchBtn, findsOneWidget);
 
-    await tester.tap(launchBtn);
+    // T1 Action 1 plays poptest-a -> b (2 tracks)
+    final action1Btn = find.text('动作 1：播放防爆音测试 (poptest-a → b)');
+    await tester.ensureVisible(action1Btn);
+    await tester.tap(action1Btn);
     await tester.pumpAndSettle();
     expect(gateway.actions, contains('playQueue:2'));
 
-    // Switch bottom tabs back on home
-    await tester.pageBack();
+    // Selecting a blocking tag disables the "通过并下一项" button
+    final detailScroll = find.descendant(
+      of: find.byType(TestItemDetailScreen),
+      matching: find.byType(Scrollable),
+    );
+    final passBtn = find.widgetWithText(FilledButton, '通过并下一项');
+    final tagFinder = find.text('暂停爆音');
+
+    // First verify Pass button is initially enabled when scrolling to bottom
+    await tester.scrollUntilVisible(passBtn, 200, scrollable: detailScroll);
+    await tester.pumpAndSettle();
+    expect(tester.widget<FilledButton>(passBtn).onPressed, isNotNull);
+
+    // Scroll back up to select blocking tag, then scroll down to verify Pass is disabled
+    await tester.scrollUntilVisible(tagFinder, -200, scrollable: detailScroll);
+    await tester.pumpAndSettle();
+    await tester.tap(tagFinder);
     await tester.pumpAndSettle();
 
+    await tester.scrollUntilVisible(passBtn, 200, scrollable: detailScroll);
+    await tester.pumpAndSettle();
+    expect(tester.widget<FilledButton>(passBtn).onPressed, isNull);
+
+    // Go back, enter T6, verify Scene A explicitly requests DsdOutputMode.dop
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    final t6Finder = find.text('DoP 全程安全保护闭环（低音量拦截 + 播中降音量熔断 + 扬声器转 PCM）');
+    await tester.scrollUntilVisible(t6Finder, 250, scrollable: homeScroll);
+    await tester.pumpAndSettle();
+    await tester.tap(t6Finder);
+    await tester.pumpAndSettle();
+
+    final sceneABtn = find.textContaining('场景 A：验证低音量起播拦截');
+    await tester.ensureVisible(sceneABtn);
+    await tester.tap(sceneABtn);
+    await tester.pumpAndSettle();
+    expect(gateway.playQueueDsdModes.last, DsdOutputMode.dop);
+
+    // Verify Monitor tab exposes 8-rate sweep (no raw debug tuning sliders)
+    await tester.pageBack();
+    await tester.pumpAndSettle();
     await tester.tap(find.text('链路/DAC'));
     await tester.pumpAndSettle();
-    final probeHeading = find.text('单频点 DAC 采样率握手探测');
+    final sweepBtn = find.text('一键探测 8 档全阶梯 (44.1 → 384 kHz)');
     final dacScroll = find.descendant(
       of: find.byType(DacMonitorScreen),
       matching: find.byType(Scrollable),
     );
-    await tester.scrollUntilVisible(probeHeading, 200, scrollable: dacScroll);
-    expect(probeHeading, findsOneWidget);
-
-    await tester.tap(find.text('报告导出'));
+    await tester.scrollUntilVisible(sweepBtn, 200, scrollable: dacScroll);
+    await tester.tap(sweepBtn);
     await tester.pumpAndSettle();
-    expect(find.text('验收结果汇总与导出'), findsOneWidget);
+    expect(gateway.actions, contains('runUsbDacRateSweep'));
   });
 }

@@ -136,8 +136,8 @@ struct AudioFormatSignature: Codable, Equatable {
 
 struct EngineSettings: Codable, Equatable {
     var rateSwitchStrategy: RateSwitchStrategy = .hybrid
-    var dacSettleDelayMs: Int = 180
-    var pcmFadeMs: Int = 15
+    var dacSettleDelayMs: Int = 80
+    var pcmFadeMs: Int = 20
     var dopSilenceLeadMs: Int = 100
     var dopSilenceTrailMs: Int = 80
     var dsdPcmTargetRateHz: Int = 176400
@@ -327,6 +327,7 @@ struct SignalPathSnapshot: Codable, Equatable {
 enum DopSafetyFailure: Error, Equatable {
     case nonUsbRoute(OutputRouteKind)
     case carrierRateUnsupported(Int)
+    case midStreamRateDrop(expectedHz: Int, actualHz: Int)
     case systemVolumeNotFull(Double)
     case userSafetyNotAcknowledged
 
@@ -334,6 +335,7 @@ enum DopSafetyFailure: Error, Equatable {
         switch self {
         case .nonUsbRoute: return "dop_requires_usb_dac"
         case .carrierRateUnsupported: return "dop_carrier_rate_exceeded"
+        case .midStreamRateDrop: return "dop_midstream_rate_drop"
         case .systemVolumeNotFull: return "dop_volume_not_full"
         case .userSafetyNotAcknowledged: return "dop_safety_unacknowledged"
         }
@@ -342,13 +344,15 @@ enum DopSafetyFailure: Error, Equatable {
     var message: String {
         switch self {
         case .nonUsbRoute(let route):
-            return "DoP 仅支持外接 USB DAC，当前路由为 \(route.displayLabel)。"
+            return "DoP 安全熔断/拦截：仅支持外接 USB DAC，当前路由已变为 \(route.displayLabel)。"
         case .carrierRateUnsupported(let rate):
             return "DoP 载波采样率 \(rate) Hz 超出 iOS UAC2 上限（768 kHz）。"
+        case .midStreamRateDrop(let expectedHz, let actualHz):
+            return "DoP 实时安全熔断：播放期间采样率从 \(expectedHz) Hz 意外变为 \(actualHz) Hz（会破坏 DoP 标记并产生全幅白噪），已紧急静音停止。"
         case .systemVolumeNotFull(let vol):
-            return "安全拦截：DoP 要求 iPhone 系统输出音量必须为 100%（当前 \(Int((vol * 100).rounded()))%），否则会破坏 DoP 标记并产生全幅白噪。请先调低耳放监听音量，再将 iPhone 音量调至最大。"
+            return "安全拦截：DoP 要求 iPhone 系统输出音量必须为 100%（当前 \(Int((vol * 100).rounded()))%），否则会破坏 DoP 标记并产生全幅白噪。请先物理拔下耳机/调低耳放音量，再将 iPhone 音量调至最大。"
         case .userSafetyNotAcknowledged:
-            return "请先完成 DoP 听力与设备安全确认（关闭 iOS「连接到耳机」限幅并调低耳放音量）。"
+            return "请先完成 DoP 听力与设备安全确认（务必先物理拔下耳机，先观察 DAC 屏幕确认点亮 DSD 后再调最低音量插耳机）。"
         }
     }
 }

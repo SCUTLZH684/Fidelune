@@ -21,6 +21,7 @@ class DacMonitorScreen extends StatefulWidget {
 class _DacMonitorScreenState extends State<DacMonitorScreen> {
   static const _probeRates = [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000];
   DacProbeResult? _lastProbe;
+  List<DacProbeResult> _sweepResults = const [];
   bool _probing = false;
 
   Future<void> _probe(int hz) async {
@@ -35,10 +36,21 @@ class _DacMonitorScreenState extends State<DacMonitorScreen> {
     }
   }
 
+  Future<void> _runSweep() async {
+    setState(() => _probing = true);
+    try {
+      final res = await widget.gateway.runUsbDacRateSweep();
+      if (mounted) {
+        setState(() => _sweepResults = res);
+      }
+    } finally {
+      if (mounted) setState(() => _probing = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final dac = widget.state.dacProfile;
-    final settings = widget.state.settings;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
@@ -68,20 +80,49 @@ class _DacMonitorScreenState extends State<DacMonitorScreen> {
         ),
         const SizedBox(height: 12),
 
-        // Interactive Rate Probe Grid
+        // Automated 8-Rate Sweep & Single-Rate Handshake Probe
         Card(
           child: Padding(
             padding: const EdgeInsets.all(14),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('单频点 DAC 采样率握手探测', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+                const Text('USB DAC 采样率握手探测', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
                 const SizedBox(height: 4),
                 const Text(
-                  '独立探测外接 DAC 是否支持指定采样率，不会发声。',
+                  '自动或单频点向 iOS/BASS 请求采样率锁相（无音频信号输出，安全无爆音）。',
                   style: TextStyle(fontSize: 12, color: FideluneColors.textSecondary),
                 ),
                 const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: _probing ? null : _runSweep,
+                    icon: const Icon(Icons.radar_rounded, size: 18),
+                    label: Text(_probing ? '探测中...' : '一键探测 8 档全阶梯 (44.1 → 384 kHz)'),
+                  ),
+                ),
+                if (_sweepResults.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: _sweepResults.map((r) {
+                      final color = r.matchedTarget ? FideluneColors.emerald : FideluneColors.coral;
+                      return Chip(
+                        visualDensity: VisualDensity.compact,
+                        side: BorderSide(color: color),
+                        label: Text(
+                          '${formatHz(r.requestedHz)}: ${r.matchedTarget ? '已锁' : formatHz(r.sessionActualHz)}',
+                          style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w600),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ],
+                const Divider(height: 20),
+                const Text('单频点 DAC 采样率握手探测', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 8),
                 Wrap(
                   spacing: 8,
                   runSpacing: 8,
@@ -101,94 +142,13 @@ class _DacMonitorScreenState extends State<DacMonitorScreen> {
                 if (_lastProbe != null) ...[
                   const SizedBox(height: 10),
                   Text(
-                    '最近探测: 请求 ${formatHz(_lastProbe!.requestedHz)} → 会话 ${formatHz(_lastProbe!.sessionActualHz)} / BASS ${formatHz(_lastProbe!.bassDeviceHz)} (${_lastProbe!.matchedTarget ? '匹配' : '未匹配'}, ${_lastProbe!.settleElapsedMs} ms)',
+                    '最近探测: 请求 ${formatHz(_lastProbe!.requestedHz)} → 会话 ${formatHz(_lastProbe!.sessionActualHz)} / BASS ${formatHz(_lastProbe!.bassDeviceHz)} (${_lastProbe!.matchedTarget ? '匹配' : '未匹配'}, ${_lastProbe!.phaseReached}, ${_lastProbe!.settleElapsedMs} ms)',
                     style: TextStyle(
                       fontSize: 12,
                       color: _lastProbe!.matchedTarget ? FideluneColors.emerald : FideluneColors.amber,
                     ),
                   ),
                 ],
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-
-        // Engine & Anti-pop Tuning Card
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('采样率协商与防爆音参数', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
-                const SizedBox(height: 8),
-                const Text('采样率切换策略', style: TextStyle(fontSize: 12, color: FideluneColors.textSecondary)),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: RateSwitchStrategy.values.map((st) {
-                    return ChoiceChip(
-                      label: Text(st.label, style: const TextStyle(fontSize: 12)),
-                      selected: settings.rateSwitchStrategy == st,
-                      onSelected: (_) => widget.gateway.updateSettings(settings.copyWith(rateSwitchStrategy: st)),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 12),
-                const Text('AVAudioSession 模式', style: TextStyle(fontSize: 12, color: FideluneColors.textSecondary)),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 6,
-                  children: SessionModeOption.values.map((m) {
-                    return ChoiceChip(
-                      label: Text(m.label, style: const TextStyle(fontSize: 12)),
-                      selected: settings.sessionMode == m,
-                      onSelected: (_) => widget.gateway.updateSettings(settings.copyWith(sessionMode: m)),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 10),
-                _SliderRow(
-                  label: '跨规格 DAC 锁相稳定间隔',
-                  valueLabel: '${settings.dacSettleDelayMs} ms',
-                  value: settings.dacSettleDelayMs.toDouble(),
-                  min: 0,
-                  max: 400,
-                  divisions: 8,
-                  onChanged: (v) => widget.gateway.updateSettings(settings.copyWith(dacSettleDelayMs: v.round())),
-                ),
-                _SliderRow(
-                  label: 'PCM 暂停/Seek/手动切歌微淡出',
-                  valueLabel: '${settings.pcmFadeMs} ms',
-                  value: settings.pcmFadeMs.toDouble(),
-                  min: 0,
-                  max: 40,
-                  divisions: 8,
-                  onChanged: (v) => widget.gateway.updateSettings(settings.copyWith(pcmFadeMs: v.round())),
-                ),
-                _SliderRow(
-                  label: 'DoP 前置 0x69 静音保护帧',
-                  valueLabel: '${settings.dopSilenceLeadMs} ms',
-                  value: settings.dopSilenceLeadMs.toDouble(),
-                  min: 20,
-                  max: 300,
-                  divisions: 14,
-                  onChanged: (v) => widget.gateway.updateSettings(settings.copyWith(dopSilenceLeadMs: v.round())),
-                ),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('严格保留自然起播首采样点 (BASS_ATTRIB_NORAMP)', style: TextStyle(fontSize: 13)),
-                  value: settings.strictBitPerfectNoRampIn,
-                  onChanged: (v) => widget.gateway.updateSettings(settings.copyWith(strictBitPerfectNoRampIn: v)),
-                ),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('记忆上次精确播放秒数', style: TextStyle(fontSize: 13)),
-                  value: settings.rememberExactPosition,
-                  onChanged: (v) => widget.gateway.updateSettings(settings.copyWith(rememberExactPosition: v)),
-                ),
               ],
             ),
           ),
@@ -212,48 +172,6 @@ class _DacMonitorScreenState extends State<DacMonitorScreen> {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _SliderRow extends StatelessWidget {
-  const _SliderRow({
-    required this.label,
-    required this.valueLabel,
-    required this.value,
-    required this.min,
-    required this.max,
-    required this.divisions,
-    required this.onChanged,
-  });
-
-  final String label;
-  final String valueLabel;
-  final double value;
-  final double min;
-  final double max;
-  final int divisions;
-  final ValueChanged<double> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(child: Text(label, style: const TextStyle(fontSize: 12.5))),
-            Text(valueLabel, style: const TextStyle(fontSize: 12.5, color: FideluneColors.sky)),
-          ],
-        ),
-        Slider(
-          value: value.clamp(min, max),
-          min: min,
-          max: max,
-          divisions: divisions,
-          onChanged: onChanged,
-        ),
-      ],
     );
   }
 }

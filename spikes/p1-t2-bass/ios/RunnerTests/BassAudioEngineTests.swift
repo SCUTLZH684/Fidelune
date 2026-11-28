@@ -5,6 +5,7 @@ import XCTest
 private final class MockAudioSessionAdapter: AudioSessionAdapter {
     var category: AVAudioSession.Category = .playback
     var mode: AVAudioSession.Mode = .default
+    var categoryOptions: AVAudioSession.CategoryOptions = []
     var sampleRate: Double = 48000
     var preferredSampleRate: Double = 0
     var outputNumberOfChannels: Int = 2
@@ -25,6 +26,7 @@ private final class MockAudioSessionAdapter: AudioSessionAdapter {
     ) throws {
         self.category = category
         self.mode = mode
+        self.categoryOptions = options
     }
 
     func setActive(_ active: Bool, options: AVAudioSession.SetActiveOptions) throws {}
@@ -60,6 +62,7 @@ private final class MockAudioBackend: AudioPlaybackBackend {
     var stopCount = 0
     var emergencyHaltReasons: [String] = []
     var reinitRates: [Int] = []
+    var recoverRateCalls: [Int] = []
 
     func initialize() -> Bool { true }
     func reinitializeDeviceAfterMediaReset() -> Bool { true }
@@ -117,6 +120,10 @@ private final class MockAudioBackend: AudioPlaybackBackend {
         isPlaying = false
         emergencyHaltReasons.append(reason)
         delegate?.backendDidStop(reason: reason)
+    }
+
+    func recoverUnexpectedUsbRateDrop(expectedHz: Int) {
+        recoverRateCalls.append(expectedHz)
     }
 }
 
@@ -307,9 +314,142 @@ final class BassAudioEngineTests: XCTestCase {
 
         let runner = BassSelfTestRunner(logger: NullDiagnosticsSink())
         let results = runner.runAll(fixturesDirectory: fixturesDir)
-        XCTAssertEqual(results.count, 9)
+        XCTAssertEqual(results.count, 10)
         for item in results {
             XCTAssertTrue(item.passed, "Self-test \(item.id) failed: \(item.summary) | details=\(item.details)")
         }
+    }
+
+    func testMultiPhaseUsbRateNegotiationPollsAndLocks352800Hz() {
+        let mockSession = MockAudioSessionAdapter()
+        mockSession.primaryOutputPortType = .usbAudio
+        mockSession.primaryOutputPortName = "TOPPING DX5 II"
+        mockSession.sampleRate = 48000
+
+        var sleepCalls = 0
+        var bassRateHz = 48000
+        let manager = DacSessionManager(
+            adapter: mockSession,
+            rawSessionForKVO: nil,
+            notificationCenter: NotificationCenter(),
+            logger: NullDiagnosticsSink(),
+            sleepFn: { _ in
+                sleepCalls += 1
+                // Simulate delayed UAC2 hardware clock relock arriving asynchronously after polling begins
+                if sleepCalls >= 20 {
+                    mockSession.sampleRate = 352800
+                }
+            }
+        )
+        manager.configureBindings(bassRateProvider: { bassRateHz }, isPlayingProvider: { false })
+
+        // Even if BASS REINIT completes phase 2, hardware finishes settling on subsequent poll iterations
+        let result = manager.negotiateSampleRate(
+            targetHz: 352800,
+            strategy: .hybrid,
+            settleDelayMs: 80,
+            sessionModeOption: .defaultMode,
+            bassReinit: { hz in
+                bassRateHz = hz
+                return true
+            }
+        )
+        XCTAssertTrue(result.matchedTarget)
+        XCTAssertEqual(result.sessionActualHz, 352800)
+        XCTAssertEqual(result.bassDeviceHz, 352800)
+        XCTAssertEqual(result.phaseReached, "phase2_bassReinit")
+        XCTAssertEqual(result.categoryOptionsRaw, 0)
+    }
+
+    func testRuntimeDopHaltsImmediatelyOnUnexpectedRateDropOrRouteChange() {
+        let center = NotificationCenter()
+        let mockSession = MockAudioSessionAdapter()
+        mockSession.primaryOutputPortType = .usbAudio
+        mockSession.primaryOutputPortName = "TOPPING DX5 II"
+        mockSession.sampleRate = 176400
+        mockSession.outputVolume = 1.0
+
+        let manager = DacSessionManager(
+            adapter: mockSession,
+            rawSessionForKVO: nil,
+            notificationCenter: center,
+            logger: NullDiagnosticsSink(),
+            sleepFn: { _ in }
+        )
+        let backend = MockAudioBackend()
+        backend.currentBassDeviceRateHz = 176400
+        backend.isPlaying = true
+        let coord = PlaybackQueueCoordinator(
+            backend: backend,
+            sessionManager: manager,
+            nowPlaying: NowPlayingAndRemoteController(logger: NullDiagnosticsSink()),
+            logger: NullDiagnosticsSink(),
+            defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!
+        )
+        _ = coord
+        manager.configureBindings(
+            bassRateProvider: { backend.currentBassDeviceRateHz },
+            isPlayingProvider: { backend.isPlaying }
+        )
+
+        // 1. Mid-stream RouteConfigChange drops USB rate from 176.4k -> 48k -> immediate safety halt
+        manager.setActiveStreamExpectation(isDop: true, expectedRateHz: 176400)
+        mockSession.sampleRate = 48000
+        center.post(
+            name: AVAudioSession.routeChangeNotification,
+            object: nil,
+            userInfo: [AVAudioSessionRouteChangeReasonKey: AVAudioSession.RouteChangeReason.routeConfigurationChange.rawValue]
+        )
+        XCTAssertEqual(backend.emergencyHaltReasons, ["dop_midstream_rate_drop"])
+
+        // 2. Re-arm DoP, simulate route switching to Speaker -> immediate non-USB safety halt
+        mockSession.sampleRate = 176400
+        manager.setActiveStreamExpectation(isDop: true, expectedRateHz: 176400)
+        mockSession.primaryOutputPortType = .builtInSpeaker
+        center.post(
+            name: AVAudioSession.routeChangeNotification,
+            object: nil,
+            userInfo: [AVAudioSessionRouteChangeReasonKey: AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue]
+        )
+        XCTAssertEqual(backend.emergencyHaltReasons, ["dop_midstream_rate_drop", "dop_requires_usb_dac"])
+    }
+
+    func testMidStreamUsbPcmRateDropTriggersRecovery() {
+        let center = NotificationCenter()
+        let mockSession = MockAudioSessionAdapter()
+        mockSession.primaryOutputPortType = .usbAudio
+        mockSession.sampleRate = 96000
+
+        let manager = DacSessionManager(
+            adapter: mockSession,
+            rawSessionForKVO: nil,
+            notificationCenter: center,
+            logger: NullDiagnosticsSink(),
+            sleepFn: { _ in }
+        )
+        let backend = MockAudioBackend()
+        backend.currentBassDeviceRateHz = 96000
+        backend.isPlaying = true
+        let coord = PlaybackQueueCoordinator(
+            backend: backend,
+            sessionManager: manager,
+            nowPlaying: NowPlayingAndRemoteController(logger: NullDiagnosticsSink()),
+            logger: NullDiagnosticsSink(),
+            defaults: UserDefaults(suiteName: "test-\(UUID().uuidString)")!
+        )
+        _ = coord
+        manager.configureBindings(
+            bassRateProvider: { backend.currentBassDeviceRateHz },
+            isPlayingProvider: { backend.isPlaying }
+        )
+
+        manager.setActiveStreamExpectation(isDop: false, expectedRateHz: 96000)
+        mockSession.sampleRate = 44100
+        center.post(
+            name: AVAudioSession.routeChangeNotification,
+            object: nil,
+            userInfo: [AVAudioSessionRouteChangeReasonKey: AVAudioSession.RouteChangeReason.routeConfigurationChange.rawValue]
+        )
+        XCTAssertEqual(backend.recoverRateCalls, [96000])
     }
 }

@@ -17,6 +17,8 @@ final class DopPassthroughStream {
     let carrierRateHz: Int
     let channels: Int
     let dsdRateHz: Int
+    let decodeOnly: Bool
+    private let defaultTrailSilenceMs: Int
 
     private var lock = os_unfair_lock_s()
     private var phase: Phase = .leadSilence
@@ -24,7 +26,12 @@ final class DopPassthroughStream {
     private var trailFramesRemaining: Int = 0
     private var lastEmittedMarker: UInt8 = 0xFA
     private var needsParityCheckAfterSilence = true
-    private var scratchBuffer: [Float] = []
+    private let maxBufferFrames: Int = 16384
+    private var pendingPayloadBuffer: [Float] = []
+    private var pendingPayloadOffsetFrames: Int = 0
+    private var pendingPayloadFrameCount: Int = 0
+    private(set) var alignmentSilenceFramesInserted: Int = 0
+    private(set) var payloadFramesEmitted: Int = 0
     private var pendingTrailCompletion: (() -> Void)?
     private var trailCompletionFired = false
     private var naturalEndFired = false
@@ -37,6 +44,8 @@ final class DopPassthroughStream {
         filePath: String,
         isPrePackagedDopWav: Bool,
         leadSilenceMs: Int,
+        trailSilenceMs: Int = 40,
+        decodeOnly: Bool = false,
         logger: DiagnosticsSink
     ) {
         let decHandle: HSTREAM = filePath.withCString { cPath in
@@ -46,7 +55,7 @@ final class DopPassthroughStream {
                     cPath,
                     0,
                     0,
-                    DWORD(BASS_SAMPLE_FLOAT | BASS_STREAM_DECODE | BASS_STREAM_PRESCAN)
+                    DWORD(BASS_SAMPLE_FLOAT | BASS_STREAM_DECODE | BASS_ASYNCFILE)
                 )
             } else {
                 return BASS_DSD_StreamCreateFile(
@@ -86,20 +95,25 @@ final class DopPassthroughStream {
         self.carrierRateHz = Int(chInfo.freq)
         self.channels = Int(chInfo.chans)
         self.dsdRateHz = Int(dsdRateFloat.rounded())
-        let evenLead = max(0, (self.carrierRateHz * leadSilenceMs / 1000) & ~1)
+        self.decodeOnly = decodeOnly
+        self.defaultTrailSilenceMs = max(10, trailSilenceMs)
+        let evenLead = max(0, (self.carrierRateHz * max(0, leadSilenceMs) / 1000) & ~1)
         self.leadFramesRemaining = evenLead
         self.phase = evenLead > 0 ? .leadSilence : .activePayload
-        self.scratchBuffer = [Float](repeating: 0, count: 4096 * max(1, self.channels))
+        self.pendingPayloadBuffer = [Float](repeating: 0, count: self.maxBufferFrames * max(1, self.channels))
 
         var out: HSTREAM = 0
         self.outputHandle = 0
 
         let ptr = Unmanaged.passRetained(self)
         self.retainedSelf = ptr
+        let streamFlags: DWORD = decodeOnly
+            ? DWORD(BASS_SAMPLE_FLOAT | BASS_STREAM_DECODE)
+            : DWORD(BASS_SAMPLE_FLOAT)
         out = BASS_StreamCreate(
             UInt32(self.carrierRateHz),
             UInt32(self.channels),
-            DWORD(BASS_SAMPLE_FLOAT),
+            streamFlags,
             dopStreamCallback,
             ptr.toOpaque()
         )
@@ -118,7 +132,7 @@ final class DopPassthroughStream {
         }
 
         self.outputHandle = out
-        // Disable any BASS ramping or downmixing on the DoP carrier stream.
+        // Disable any BASS ramping or downmixing on the DoP carrier stream (gain scaling corrupts 0x05/0xFA markers).
         BASS_ChannelSetAttribute(out, DWORD(BASS_ATTRIB_NORAMP), 1.0)
         BASS_ChannelSetAttribute(out, DWORD(BASS_ATTRIB_DOWNMIX), 0.0)
         BASS_ChannelSetAttribute(out, DWORD(BASS_ATTRIB_VOL), 1.0)
@@ -163,18 +177,23 @@ final class DopPassthroughStream {
     }
 
     func seek(to seconds: Double, leadSilenceMs: Int) -> Bool {
-        let targetBytes = BASS_ChannelSeconds2Bytes(decoderHandle, max(0, seconds))
-        guard targetBytes != UInt64.max else { return false }
+        let rawTargetBytes = BASS_ChannelSeconds2Bytes(decoderHandle, max(0, seconds))
+        guard rawTargetBytes != UInt64.max else { return false }
+        let frameSizeBytes = UInt64(max(1, channels * MemoryLayout<Float>.size))
+        let alignedBytes = (rawTargetBytes / frameSizeBytes) * frameSizeBytes
+
         os_unfair_lock_lock(&lock)
-        let ok = BASS_ChannelSetPosition(decoderHandle, targetBytes, DWORD(BASS_POS_BYTE)) != 0
+        let ok = BASS_ChannelSetPosition(decoderHandle, alignedBytes, DWORD(BASS_POS_BYTE)) != 0
         if ok {
-            let evenLead = max(2, (carrierRateHz * leadSilenceMs / 1000) & ~1)
+            pendingPayloadOffsetFrames = 0
+            pendingPayloadFrameCount = 0
+            let evenLead = max(2, (carrierRateHz * max(10, leadSilenceMs) / 1000) & ~1)
             leadFramesRemaining = evenLead
             phase = .leadSilence
             needsParityCheckAfterSilence = true
         }
         os_unfair_lock_unlock(&lock)
-        if ok {
+        if ok && !decodeOnly {
             BASS_ChannelSetPosition(outputHandle, 0, DWORD(BASS_POS_BYTE))
         }
         return ok
@@ -182,11 +201,18 @@ final class DopPassthroughStream {
 
     func prepareResumeLeadSilence(ms: Int) {
         os_unfair_lock_lock(&lock)
-        let evenLead = max(2, (carrierRateHz * ms / 1000) & ~1)
+        let evenLead = max(2, (carrierRateHz * max(10, ms) / 1000) & ~1)
         leadFramesRemaining = evenLead
         phase = .leadSilence
         needsParityCheckAfterSilence = true
         os_unfair_lock_unlock(&lock)
+    }
+
+    func currentStatsSnapshot() -> (alignmentSilenceFrames: Int, payloadFrames: Int, lastMarker: UInt8) {
+        os_unfair_lock_lock(&lock)
+        let snap = (alignmentSilenceFramesInserted, payloadFramesEmitted, lastEmittedMarker)
+        os_unfair_lock_unlock(&lock)
+        return snap
     }
 
     func beginTrailSilenceAndStop(trailMs: Int, completion: @escaping () -> Void) {
@@ -229,53 +255,67 @@ final class DopPassthroughStream {
             }
         }
 
-        // 2. Read real DoP payload frames from BASSDSD
-        if phase == .activePayload && framesWritten < maxFrames {
-            let remainingFrames = maxFrames - framesWritten
-            let neededFloats = remainingFrames * channels
-            if scratchBuffer.count < neededFloats {
-                scratchBuffer = [Float](repeating: 0, count: neededFloats)
-            }
-
-            let wantBytes = DWORD(remainingFrames * frameSizeBytes)
-            let gotBytes: DWORD = scratchBuffer.withUnsafeMutableBytes { raw in
-                guard let base = raw.baseAddress else { return 0 }
-                return BASS_ChannelGetData(decoderHandle, base, wantBytes)
-            }
-
-            if gotBytes == DWORD.max || gotBytes == 0 {
-                // End of DSD stream -> switch to short 0x69 trail to avoid cut click
-                trailFramesRemaining = max(4, (carrierRateHz * 40 / 1000) & ~1)
-                phase = .trailSilence
-            } else {
-                var gotFrames = Int(gotBytes) / frameSizeBytes
-                var srcOffsetFrames = 0
-
-                // Maintain strict alternating 0x05 / 0xFA marker parity across silence boundaries
-                if needsParityCheckAfterSilence && gotFrames > 0 {
-                    let firstMarker = DopFrameCodec.extractDopMarker(fromFloat: scratchBuffer[0])
-                    if firstMarker == lastEmittedMarker && (firstMarker == 0x05 || firstMarker == 0xFA) {
-                        srcOffsetFrames = 1
-                        gotFrames -= 1
-                    }
-                    needsParityCheckAfterSilence = false
+        // 2. Drain any buffered payload frames first, then read from BASSDSD with zero-frame-loss parity alignment.
+        while phase == .activePayload && framesWritten < maxFrames {
+            if pendingPayloadOffsetFrames >= pendingPayloadFrameCount {
+                let wantFrames = min(maxFrames - framesWritten, maxBufferFrames)
+                let wantBytes = DWORD(wantFrames * frameSizeBytes)
+                let gotBytes: DWORD = pendingPayloadBuffer.withUnsafeMutableBytes { raw in
+                    guard let base = raw.baseAddress else { return 0 }
+                    return BASS_ChannelGetData(decoderHandle, base, wantBytes)
                 }
 
-                if gotFrames > 0 {
-                    let copyFloats = gotFrames * channels
-                    let dstOffset = framesWritten * channels
-                    let srcOffset = srcOffsetFrames * channels
-                    for i in 0..<copyFloats {
-                        outPtr[dstOffset + i] = scratchBuffer[srcOffset + i]
-                    }
-                    let lastMarker = DopFrameCodec.extractDopMarker(
-                        fromFloat: scratchBuffer[srcOffset + (gotFrames - 1) * channels]
-                    )
-                    if lastMarker == 0x05 || lastMarker == 0xFA {
-                        lastEmittedMarker = lastMarker
-                    }
-                    framesWritten += gotFrames
+                if gotBytes == DWORD.max || gotBytes == 0 {
+                    // End of DSD stream -> switch to short 0x69 trail to avoid cut click
+                    trailFramesRemaining = max(4, (carrierRateHz * defaultTrailSilenceMs / 1000) & ~1)
+                    phase = .trailSilence
+                    needsParityCheckAfterSilence = true
+                    break
                 }
+
+                pendingPayloadOffsetFrames = 0
+                pendingPayloadFrameCount = Int(gotBytes) / frameSizeBytes
+                if pendingPayloadFrameCount <= 0 {
+                    continue
+                }
+            }
+
+            // Guarantee strict 0x05 / 0xFA marker alternation WITHOUT dropping any valid DSD payload frame:
+            // if the first payload frame's marker collides with lastEmittedMarker, emit 1 extra 0x69 silence
+            // alignment frame (which flips lastEmittedMarker) and keep pendingPayloadOffsetFrames intact.
+            if needsParityCheckAfterSilence && pendingPayloadOffsetFrames < pendingPayloadFrameCount {
+                let firstMarker = DopFrameCodec.extractDopMarker(
+                    fromFloat: pendingPayloadBuffer[pendingPayloadOffsetFrames * channels]
+                )
+                if (firstMarker == 0x05 || firstMarker == 0xFA) && firstMarker == lastEmittedMarker {
+                    emitSilenceFrames(into: outPtr, startFrame: framesWritten, count: 1)
+                    framesWritten += 1
+                    alignmentSilenceFramesInserted += 1
+                }
+                needsParityCheckAfterSilence = false
+                if framesWritten >= maxFrames {
+                    break
+                }
+            }
+
+            let availableFrames = pendingPayloadFrameCount - pendingPayloadOffsetFrames
+            let copyFrames = min(availableFrames, maxFrames - framesWritten)
+            if copyFrames > 0 {
+                let copyFloats = copyFrames * channels
+                let dstOffset = framesWritten * channels
+                let srcOffset = pendingPayloadOffsetFrames * channels
+                for i in 0..<copyFloats {
+                    outPtr[dstOffset + i] = pendingPayloadBuffer[srcOffset + i]
+                }
+                let lastMarker = DopFrameCodec.extractDopMarker(
+                    fromFloat: pendingPayloadBuffer[srcOffset + (copyFrames - 1) * channels]
+                )
+                if lastMarker == 0x05 || lastMarker == 0xFA {
+                    lastEmittedMarker = lastMarker
+                }
+                pendingPayloadOffsetFrames += copyFrames
+                framesWritten += copyFrames
+                payloadFramesEmitted += copyFrames
             }
         }
 

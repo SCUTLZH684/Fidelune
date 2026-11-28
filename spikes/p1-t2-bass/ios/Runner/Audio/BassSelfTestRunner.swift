@@ -89,6 +89,7 @@ final class BassSelfTestRunner {
             expectedDsdHz: 5644800,
             fixturesDirectory: fixturesDirectory
         ))
+        results.append(runDopPassthroughIntegrityCheck(fixturesDirectory: fixturesDirectory))
         results.append(runCorruptFileResilienceCheck(fixturesDirectory: fixturesDirectory))
 
         let passCount = results.filter { $0.passed }.count
@@ -446,6 +447,195 @@ final class BassSelfTestRunner {
                 "verifiedFrames": "\(totalFrames)",
                 "markerErrors": "\(markerErrors)",
                 "silence0x69ParityOk": "\(silenceOk)",
+            ]
+        )
+    }
+
+    private func runDopPassthroughIntegrityCheck(fixturesDirectory: URL) -> SelfTestResult {
+        let t0 = Date()
+        let url = fixturesDirectory.appendingPathComponent("dsd64.dsf")
+
+        // 1. Decode reference raw BASSDSD DoP float32 stream
+        let refHandle: HSTREAM = url.path.withCString { cPath in
+            BASS_DSD_StreamCreateFile(
+                DWORD(BASS_FILE_NAME),
+                cPath,
+                0,
+                0,
+                DWORD(BASS_DSD_DOP | BASS_SAMPLE_FLOAT | BASS_STREAM_DECODE),
+                0
+            )
+        }
+        guard refHandle != 0 else {
+            return SelfTestResult(
+                id: "auto_dop_passthrough_integrity",
+                title: "DoP 自定义流零丢帧与 Seek 奇偶校验",
+                passed: false,
+                durationMs: elapsedMs(since: t0),
+                summary: "参考 dsd64.dsf 打开失败",
+                details: [:]
+            )
+        }
+        defer { BASS_StreamFree(refHandle) }
+
+        var rawFloats: [Float] = []
+        var chunk = [Float](repeating: 0, count: 4096 * 2)
+        while true {
+            let got: DWORD = chunk.withUnsafeMutableBytes { raw in
+                BASS_ChannelGetData(refHandle, raw.baseAddress, DWORD(raw.count))
+            }
+            if got == DWORD.max || got == 0 { break }
+            let count = Int(got) / MemoryLayout<Float>.size
+            rawFloats.append(contentsOf: chunk.prefix(count))
+        }
+        let rawFrames = rawFloats.count / 2
+        let rawPayloadData = rawFloats.withUnsafeBytes { Data($0) }
+        let rawSha = sha256Hex(rawPayloadData)
+
+        // 2. Render full file through DopPassthroughStream(decodeOnly: true) using prime-sized reads (1021 frames)
+        let leadMs = 20
+        let trailMs = 20
+        guard let dopStream = DopPassthroughStream(
+            filePath: url.path,
+            isPrePackagedDopWav: false,
+            leadSilenceMs: leadMs,
+            trailSilenceMs: trailMs,
+            decodeOnly: true,
+            logger: logger
+        ) else {
+            return SelfTestResult(
+                id: "auto_dop_passthrough_integrity",
+                title: "DoP 自定义流零丢帧与 Seek 奇偶校验",
+                passed: false,
+                durationMs: elapsedMs(since: t0),
+                summary: "DopPassthroughStream(decodeOnly: true) 创建失败",
+                details: [:]
+            )
+        }
+
+        var emittedFloats: [Float] = []
+        var outChunk = [Float](repeating: 0, count: 1021 * 2)
+        while true {
+            let got: DWORD = outChunk.withUnsafeMutableBytes { raw in
+                BASS_ChannelGetData(dopStream.outputHandle, raw.baseAddress, DWORD(raw.count))
+            }
+            if got == DWORD.max || got == 0 { break }
+            let count = Int(got) / MemoryLayout<Float>.size
+            emittedFloats.append(contentsOf: outChunk.prefix(count))
+        }
+        let stats = dopStream.currentStatsSnapshot()
+        dopStream.releaseResources()
+
+        let emittedFrames = emittedFloats.count / 2
+        var fullParityErrors = 0
+        var prevMarker: UInt8?
+        for f in 0..<emittedFrames {
+            let mL = DopFrameCodec.extractDopMarker(fromFloat: emittedFloats[f * 2])
+            let mR = DopFrameCodec.extractDopMarker(fromFloat: emittedFloats[f * 2 + 1])
+            if (mL != 0x05 && mL != 0xFA) || mL != mR {
+                fullParityErrors += 1
+            } else if let prev = prevMarker, mL == prev {
+                fullParityErrors += 1
+            }
+            prevMarker = mL
+        }
+
+        let expectedLeadFrames = (176400 * leadMs / 1000) & ~1
+        let payloadStartFrame = expectedLeadFrames + stats.alignmentSilenceFrames
+        var extractedSha = ""
+        if emittedFrames >= payloadStartFrame + rawFrames {
+            let payloadSlice = Array(emittedFloats[(payloadStartFrame * 2)..<((payloadStartFrame + rawFrames) * 2)])
+            let extractedData = payloadSlice.withUnsafeBytes { Data($0) }
+            extractedSha = sha256Hex(extractedData)
+        }
+
+        // Verify surrounding lead/trail frames strictly carry 0x6969 silence payload
+        var silencePayloadErrors = 0
+        for f in 0..<min(payloadStartFrame, emittedFrames) {
+            for ch in 0..<2 {
+                let s24 = UInt32(bitPattern: DopFrameCodec.floatToSigned24(emittedFloats[f * 2 + ch])) & 0xFFFF
+                if s24 != 0x6969 { silencePayloadErrors += 1 }
+            }
+        }
+        if payloadStartFrame + rawFrames < emittedFrames {
+            for f in (payloadStartFrame + rawFrames)..<emittedFrames {
+                for ch in 0..<2 {
+                    let s24 = UInt32(bitPattern: DopFrameCodec.floatToSigned24(emittedFloats[f * 2 + ch])) & 0xFFFF
+                    if s24 != 0x6969 { silencePayloadErrors += 1 }
+                }
+            }
+        }
+
+        // 3. Pass 2: Verify parity stays unbroken across multiple odd/even-frame seeks
+        var seekParityErrors = 0
+        if let seekStream = DopPassthroughStream(
+            filePath: url.path,
+            isPrePackagedDopWav: false,
+            leadSilenceMs: 10,
+            trailSilenceMs: 10,
+            decodeOnly: true,
+            logger: logger
+        ) {
+            func verifyReadSegment(framesLimit: Int?, expectedLastMarker: inout UInt8?) {
+                var readFramesTotal = 0
+                var buf = [Float](repeating: 0, count: 997 * 2)
+                while true {
+                    let wantFrames = framesLimit.map { min(997, max(0, $0 - readFramesTotal)) } ?? 997
+                    if wantFrames == 0 { break }
+                    let wantBytes = DWORD(wantFrames * 2 * MemoryLayout<Float>.size)
+                    let got: DWORD = buf.withUnsafeMutableBytes { raw in
+                        BASS_ChannelGetData(seekStream.outputHandle, raw.baseAddress, wantBytes)
+                    }
+                    if got == DWORD.max || got == 0 { break }
+                    let fCount = Int(got) / (2 * MemoryLayout<Float>.size)
+                    for f in 0..<fCount {
+                        let mL = DopFrameCodec.extractDopMarker(fromFloat: buf[f * 2])
+                        let mR = DopFrameCodec.extractDopMarker(fromFloat: buf[f * 2 + 1])
+                        if (mL != 0x05 && mL != 0xFA) || mL != mR {
+                            seekParityErrors += 1
+                        } else if let prev = expectedLastMarker, mL == prev {
+                            seekParityErrors += 1
+                        }
+                        expectedLastMarker = mL
+                    }
+                    readFramesTotal += fCount
+                }
+            }
+
+            var seekPrev: UInt8?
+            verifyReadSegment(framesLimit: 2500, expectedLastMarker: &seekPrev)
+            _ = seekStream.seek(to: 0.3333, leadSilenceMs: 10)
+            verifyReadSegment(framesLimit: 3200, expectedLastMarker: &seekPrev)
+            _ = seekStream.seek(to: 1.1001, leadSilenceMs: 10)
+            verifyReadSegment(framesLimit: nil, expectedLastMarker: &seekPrev)
+            seekStream.releaseResources()
+        } else {
+            seekParityErrors += 1
+        }
+
+        let ok = rawFrames > 0 &&
+            stats.payloadFrames == rawFrames &&
+            extractedSha == rawSha &&
+            fullParityErrors == 0 &&
+            silencePayloadErrors == 0 &&
+            seekParityErrors == 0
+
+        return SelfTestResult(
+            id: "auto_dop_passthrough_integrity",
+            title: "DoP 自定义流零丢帧（含 0x69 对齐与 Seek 奇偶校验）",
+            passed: ok,
+            durationMs: elapsedMs(since: t0),
+            summary: ok
+                ? "零丢帧（有效载荷 \(stats.payloadFrames)/\(rawFrames) 帧，插入 \(stats.alignmentSilenceFrames) 帧 0x69 对齐），SHA-256 与双次 Seek 奇偶全通过"
+                : "DoP 完整性校验失败：payload=\(stats.payloadFrames)/\(rawFrames), parityErr=\(fullParityErrors), seekErr=\(seekParityErrors), silErr=\(silencePayloadErrors)",
+            details: [
+                "rawFrames": "\(rawFrames)",
+                "emittedPayloadFrames": "\(stats.payloadFrames)",
+                "alignmentSilenceFrames": "\(stats.alignmentSilenceFrames)",
+                "fullParityErrors": "\(fullParityErrors)",
+                "silencePayloadErrors": "\(silencePayloadErrors)",
+                "seekParityErrors": "\(seekParityErrors)",
+                "shaMatched": "\(extractedSha == rawSha)",
             ]
         )
     }

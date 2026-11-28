@@ -27,6 +27,7 @@ class PlayerLibraryScreen extends StatefulWidget {
 class _PlayerLibraryScreenState extends State<PlayerLibraryScreen> {
   String _query = '';
   bool _showUserOnly = false;
+  double? _dragSeconds;
 
   Future<void> _playFromList(List<TrackSpec> list, int index) async {
     final target = list[index];
@@ -86,10 +87,19 @@ class _PlayerLibraryScreenState extends State<PlayerLibraryScreen> {
                 ),
                 Slider(
                   value: widget.state.durationSeconds > 0
-                      ? widget.state.positionSeconds.clamp(0, widget.state.durationSeconds)
-                      : 0,
-                  max: widget.state.durationSeconds > 0 ? widget.state.durationSeconds : 1,
-                  onChanged: widget.state.durationSeconds > 0 ? (v) => widget.gateway.seek(v) : null,
+                      ? (_dragSeconds ?? widget.state.positionSeconds)
+                          .clamp(0.0, widget.state.durationSeconds)
+                      : 0.0,
+                  max: widget.state.durationSeconds > 0 ? widget.state.durationSeconds : 1.0,
+                  onChanged: widget.state.durationSeconds > 0
+                      ? (v) => setState(() => _dragSeconds = v)
+                      : null,
+                  onChangeEnd: widget.state.durationSeconds > 0
+                      ? (v) async {
+                          setState(() => _dragSeconds = null);
+                          await widget.gateway.seek(v);
+                        }
+                      : null,
                 ),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,

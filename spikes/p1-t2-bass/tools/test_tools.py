@@ -60,6 +60,21 @@ class BassToolsTests(unittest.TestCase):
         self.assertFalse(ok_gap)
         self.assertEqual(gap_report["boundary_anchors_delta_frames"], 5)
 
+    def test_pcm_ladder_includes_352800_and_gapless_cuts_nonzero(self) -> None:
+        self.assertEqual(
+            fixtures.PCM_LADDER_RATES,
+            [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000],
+        )
+        sig44 = fixtures.tone(44100, 16, 2, 6 * 44100)
+        cut44 = (3 * 44100 + 37) * 4
+        self.assertTrue(any(sig44[cut44 - 4:cut44]))
+        self.assertTrue(any(sig44[cut44:cut44 + 4]))
+
+        sig96 = fixtures.tone(96000, 24, 2, 6 * 96000)
+        cut96 = (3 * 96000 + 73) * 6
+        self.assertTrue(any(sig96[cut96 - 6:cut96]))
+        self.assertTrue(any(sig96[cut96:cut96 + 6]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -167,15 +167,16 @@ import UIKit
                 guard let self else { return }
                 let res = self.coordinator.probeDacRate(hz)
                 DispatchQueue.main.async {
-                    result([
-                        "requestedHz": res.requestedHz,
-                        "sessionActualHz": res.sessionActualHz,
-                        "bassDeviceHz": res.bassDeviceHz,
-                        "matchedTarget": res.matchedTarget,
-                        "routeKind": res.routeKind.rawValue,
-                        "strategyUsed": res.strategyUsed.rawValue,
-                        "settleElapsedMs": res.settleElapsedMs,
-                    ])
+                    result(res.toDictionary())
+                }
+            }
+
+        case "runUsbDacRateSweep":
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self else { return }
+                let results = self.coordinator.runUsbDacRateSweep()
+                DispatchQueue.main.async {
+                    result(results.map { $0.toDictionary() })
                 }
             }
 
@@ -318,7 +319,7 @@ import UIKit
         guard let docs = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else {
             return nil
         }
-        return docs.appendingPathComponent("fidelune-acceptance-state.json")
+        return docs.appendingPathComponent("fidelune-acceptance-state-v2.json")
     }
 
     private func writeAcceptanceState(json: String) -> Bool {

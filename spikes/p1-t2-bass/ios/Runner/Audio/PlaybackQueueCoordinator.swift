@@ -39,6 +39,7 @@ final class PlaybackQueueCoordinator {
 
     private var consecutiveFailureCount = 0
     private var lastPositionPersistTime: Date = .distantPast
+    private var persistWorkItem: DispatchWorkItem?
     private let initLock = NSLock()
 
     init(
@@ -168,7 +169,9 @@ final class PlaybackQueueCoordinator {
 
     func seek(to seconds: Double) {
         sessionManager.markUserCommandDuringInterruption()
-        backend.seek(to: seconds, fadeMs: settings.pcmFadeMs, completion: nil)
+        backend.seek(to: seconds, fadeMs: settings.pcmFadeMs) { [weak self] in
+            self?.emitState(forceNowPlaying: true)
+        }
     }
 
     func setPlaybackMode(_ mode: PlaybackMode) {
@@ -211,12 +214,27 @@ final class PlaybackQueueCoordinator {
             targetHz: targetHz,
             strategy: settings.rateSwitchStrategy,
             settleDelayMs: settings.dacSettleDelayMs,
+            sessionModeOption: settings.sessionMode,
             bassReinit: { [weak self] hz in
                 self?.backend.reinitializeSampleRate(hz) ?? false
             }
         )
-        emitState()
+        emitState(forceNowPlaying: true)
         return result
+    }
+
+    func runUsbDacRateSweep() -> [RateNegotiationResult] {
+        stop(reason: "dac_rate_sweep")
+        let results = sessionManager.runUsbDacRateSweep(
+            strategy: settings.rateSwitchStrategy,
+            settleDelayMs: settings.dacSettleDelayMs,
+            sessionModeOption: settings.sessionMode,
+            bassReinit: { [weak self] hz in
+                self?.backend.reinitializeSampleRate(hz) ?? false
+            }
+        )
+        emitState(forceNowPlaying: true)
+        return results
     }
 
     func statePayload() -> [String: Any] {
@@ -302,16 +320,26 @@ final class PlaybackQueueCoordinator {
         }
     }
 
-    private func emitState() {
+    private func emitState(forceNowPlaying: Bool = true) {
         let payload = statePayload()
         nowPlaying.updateNowPlaying(
             track: currentTrack,
             isPlaying: isPlaying,
             positionSeconds: positionSeconds,
             durationSeconds: durationSeconds,
-            signalPath: signalPath
+            signalPath: signalPath,
+            force: forceNowPlaying
         )
         listener?.coordinatorDidUpdateState(payload)
+    }
+
+    private func scheduleSavePersistedQueue(delaySeconds: TimeInterval = 0.5) {
+        persistWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.savePersistedQueue()
+        }
+        persistWorkItem = item
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delaySeconds, execute: item)
     }
 
     private func savePersistedQueue() {
@@ -390,8 +418,8 @@ extension PlaybackQueueCoordinator: AudioPlaybackBackendDelegate {
         durationSeconds = backend.currentDurationSeconds
         self.signalPath = signalPath
         backend.updateQueuedNextTrack(nextTrackForGaplessPreview())
-        savePersistedQueue()
-        emitState()
+        scheduleSavePersistedQueue()
+        emitState(forceNowPlaying: true)
     }
 
     func backendDidCompleteTrack(track: TrackSpec) {
@@ -429,7 +457,7 @@ extension PlaybackQueueCoordinator: AudioPlaybackBackendDelegate {
             lastPositionPersistTime = Date()
             defaults.set(seconds, forKey: PersistKey.position)
         }
-        emitState()
+        emitState(forceNowPlaying: false)
     }
 
     func backendDidUpdateSignalPath(_ signalPath: SignalPathSnapshot) {
@@ -496,19 +524,34 @@ extension PlaybackQueueCoordinator: DacSessionManagerDelegate {
     }
 
     func sessionDidObserveRouteArrival(profile: DacCapabilityProfile) {
-        emitState()
+        emitState(forceNowPlaying: true)
+    }
+
+    func sessionDidDetectUnexpectedUsbRateDrop(expectedHz: Int, actualSessionHz: Int, actualBassHz: Int) {
+        backend.recoverUnexpectedUsbRateDrop(expectedHz: expectedHz)
+        emitState(forceNowPlaying: true)
     }
 
     func sessionDidBeginInterruption(wasPlaying: Bool) {
         if wasPlaying {
             backend.pause(fadeMs: settings.pcmFadeMs, completion: nil)
         }
-        emitState()
+        emitState(forceNowPlaying: true)
     }
 
     func sessionShouldResumeAfterInterruption() {
-        guard isPaused, currentTrack != nil else { return }
-        backend.resume(fadeMs: settings.pcmFadeMs, completion: nil)
+        // Wait 150ms for interrupting audio session (e.g. Timer/Phone) to tear down cleanly
+        // before re-negotiating external USB DAC sample rate.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self,
+                  self.isPaused,
+                  self.currentTrack != nil,
+                  !self.sessionManager.pausedForRouteRemoval,
+                  !self.sessionManager.isInterrupted else {
+                return
+            }
+            self.backend.resume(fadeMs: self.settings.pcmFadeMs, completion: nil)
+        }
     }
 
     func sessionDidObserveMediaServicesLost() {

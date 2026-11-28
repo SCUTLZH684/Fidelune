@@ -310,8 +310,8 @@ class DacProfile {
 class EngineSettings {
   const EngineSettings({
     this.rateSwitchStrategy = RateSwitchStrategy.hybrid,
-    this.dacSettleDelayMs = 180,
-    this.pcmFadeMs = 15,
+    this.dacSettleDelayMs = 80,
+    this.pcmFadeMs = 20,
     this.dopSilenceLeadMs = 100,
     this.dopSilenceTrailMs = 80,
     this.dsdPcmTargetRateHz = 176400,
@@ -485,6 +485,7 @@ class DacProbeResult {
     required this.routeKind,
     required this.strategyUsed,
     required this.settleElapsedMs,
+    this.phaseReached = '',
   });
 
   final int requestedHz;
@@ -494,6 +495,7 @@ class DacProbeResult {
   final String routeKind;
   final String strategyUsed;
   final int settleElapsedMs;
+  final String phaseReached;
 
   factory DacProbeResult.fromMap(Map<String, dynamic> map) {
     return DacProbeResult(
@@ -504,6 +506,7 @@ class DacProbeResult {
       routeKind: map['routeKind'] as String? ?? 'Unknown',
       strategyUsed: map['strategyUsed'] as String? ?? '',
       settleElapsedMs: (map['settleElapsedMs'] as num?)?.toInt() ?? 0,
+      phaseReached: map['phaseReached'] as String? ?? '',
     );
   }
 }

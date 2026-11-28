@@ -108,9 +108,14 @@ class AcceptanceController extends ChangeNotifier {
   bool _runningAutoTests = false;
   String? _lastAutoRunIso;
 
+  List<DacProbeResult> _usbSweepResults = const [];
+  bool _runningUsbSweep = false;
+
   List<SelfTestResult> get autoResults => _autoResults;
   bool get runningAutoTests => _runningAutoTests;
   String? get lastAutoRunIso => _lastAutoRunIso;
+  List<DacProbeResult> get usbSweepResults => _usbSweepResults;
+  bool get runningUsbSweep => _runningUsbSweep;
 
   AcceptanceRecord recordFor(String itemId) =>
       _records[itemId] ?? AcceptanceRecord(itemId: itemId);
@@ -164,6 +169,49 @@ class AcceptanceController extends ChangeNotifier {
     }
   }
 
+  Future<void> runUsbRateSweep() async {
+    if (_runningUsbSweep) return;
+    _runningUsbSweep = true;
+    notifyListeners();
+    try {
+      _usbSweepResults = await _gateway.runUsbDacRateSweep();
+    } finally {
+      _runningUsbSweep = false;
+      notifyListeners();
+    }
+  }
+
+  /// Returns a non-null Chinese explanation when marking [item] as passed must be blocked
+  /// (e.g. any failure tag selected, or any required DAC rate observation missing/non-matching).
+  String? passBlockReason({
+    required AcceptanceTestItem item,
+    required List<String> selectedTags,
+    required Map<int, String> dacRateObservations,
+  }) {
+    if (selectedTags.isNotEmpty) {
+      return '已勾选异常标签（${selectedTags.join('、')}），不允许标为「通过」。请点「标记未通过」或先取消误选标签。';
+    }
+    if (item.dacRateChecklistHz.isNotEmpty) {
+      final missingRates = <String>[];
+      final mismatchedRates = <String>[];
+      for (final hz in item.dacRateChecklistHz) {
+        final obs = dacRateObservations[hz];
+        if (obs == null || obs.isEmpty) {
+          missingRates.add(formatHz(hz));
+        } else if (obs != '匹配') {
+          mismatchedRates.add('${formatHz(hz)}($obs)');
+        }
+      }
+      if (mismatchedRates.isNotEmpty) {
+        return '存在未匹配频点（${mismatchedRates.join('、')}），不允许标为「通过」，请点「标记未通过」。';
+      }
+      if (missingRates.isNotEmpty) {
+        return '请先点选核对所有 ${item.dacRateChecklistHz.length} 档 DAC 屏幕读数（尚缺：${missingRates.join('、')}），全部「匹配」后方可标为通过。';
+      }
+    }
+    return null;
+  }
+
   Future<void> markResult({
     required String itemId,
     required TestItemStatus status,
@@ -173,13 +221,38 @@ class AcceptanceController extends ChangeNotifier {
     String? routeName,
   }) async {
     final prev = recordFor(itemId);
+    final effectiveTags = selectedTags ?? prev.selectedTags;
+    final effectiveObs = dacRateObservations ?? prev.dacRateObservations;
+    final item = acceptanceCatalog.cast<AcceptanceTestItem?>().firstWhere(
+          (e) => e?.id == itemId,
+          orElse: () => null,
+        );
+
+    var effectiveStatus = status;
+    if (status == TestItemStatus.passed) {
+      if (effectiveTags.isNotEmpty) {
+        // Hard guardrail: blocking failure tags cannot produce a passed verdict.
+        effectiveStatus = TestItemStatus.failed;
+      } else if (item != null &&
+          passBlockReason(item: item, selectedTags: effectiveTags, dacRateObservations: effectiveObs) != null &&
+          effectiveTags.isEmpty) {
+        // Only coerce to failed if non-matching observations exist
+        final hasMismatch = item.dacRateChecklistHz.any(
+          (hz) => effectiveObs[hz] != null && effectiveObs[hz]!.isNotEmpty && effectiveObs[hz] != '匹配',
+        );
+        if (hasMismatch) {
+          effectiveStatus = TestItemStatus.failed;
+        }
+      }
+    }
+
     final updated = prev.copyWith(
-      status: status,
-      attempts: status == TestItemStatus.pending ? prev.attempts : prev.attempts + 1,
+      status: effectiveStatus,
+      attempts: effectiveStatus == TestItemStatus.pending ? prev.attempts : prev.attempts + 1,
       updatedAtIso: DateTime.now().toIso8601String(),
       notes: notes ?? prev.notes,
-      selectedTags: selectedTags ?? prev.selectedTags,
-      dacRateObservations: dacRateObservations ?? prev.dacRateObservations,
+      selectedTags: effectiveTags,
+      dacRateObservations: effectiveObs,
       lastRouteObserved: routeName ?? prev.lastRouteObserved,
     );
     _records[itemId] = updated;

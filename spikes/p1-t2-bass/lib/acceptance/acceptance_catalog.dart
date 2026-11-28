@@ -1,14 +1,36 @@
 import '../models/audio_models.dart';
 
 enum AcceptanceGroupId {
-  speakerAndPop('扬声器与防爆音基础验证', '无需外接设备，先测同规格无缝、防爆音与坏文件跳过'),
-  usbDacRates('USB DAC 原采样率与跨规格切换', '接上 TOPPING DX5 II，核对 DAC 屏幕采样率与无缝/跨规格切换'),
-  dsdAndDop('DSD / DoP 安全受控验收', '强制安全检查：需关 iOS「连接到耳机」限幅、音量 100%、调低耳放监听'),
-  routingAndSystem('热插拔、路由切换、后台与系统中断', '拔插 DAC、蓝牙/扬声器切换、锁屏控制与来电/计时器中断恢复');
+  speakerAntiPop('1. 扬声器防爆音与同规格无缝复测', '拔掉外接 DAC，复测暂停/Seek/切歌防爆音及独立 A/B 无缝听感'),
+  usbDacRates('2. USB DAC 8 档原采样率（含 352.8 kHz）与无缝保持', '接上 TOPPING DX5 II，先运行 8 档自动握手，再人工核对 DAC 面板读数与稳定性'),
+  lockAndRouting('3. 锁屏播控、热插拔与中断恢复复测', '验证锁屏卡片恢复、双向控件及热插拔/闹钟后 96 kHz 稳定保持'),
+  dsdAndDop('4. DSD / DoP 安全闭环与硬件点灯（须先拔耳机）', '安全警示：涉及 DoP 测试必须先从 DAC/耳放物理拔下耳机，确认面板点亮后再最小音量试听');
 
   const AcceptanceGroupId(this.title, this.description);
   final String title;
   final String description;
+}
+
+class TestSubAction {
+  const TestSubAction({
+    required this.id,
+    required this.label,
+    required this.description,
+    required this.fixtureFiles,
+    this.dsdMode = DsdOutputMode.auto,
+    this.playbackMode = PlaybackMode.sequential,
+    this.requiresDopSafety = false,
+    this.requiresVolumeBelowFull = false,
+  });
+
+  final String id;
+  final String label;
+  final String description;
+  final List<String> fixtureFiles;
+  final DsdOutputMode dsdMode;
+  final PlaybackMode playbackMode;
+  final bool requiresDopSafety;
+  final bool requiresVolumeBelowFull;
 }
 
 class AcceptanceTestItem {
@@ -20,13 +42,14 @@ class AcceptanceTestItem {
     required this.estimatedTime,
     required this.requiresUsbDac,
     required this.requiresDopSafety,
-    required this.requiresUnplugOrExternalAction,
+    required this.requiresHeadphonesUnplugged,
+    required this.observeGuide,
+    required this.judgeGuide,
     required this.steps,
     required this.passCriteria,
     required this.failureTags,
-    required this.fixtureFiles,
-    this.desiredDsdMode = DsdOutputMode.auto,
-    this.desiredPlaybackMode = PlaybackMode.sequential,
+    required this.subActions,
+    this.supportsRateSweep = false,
     this.dacRateChecklistHz = const [],
   });
 
@@ -37,285 +60,321 @@ class AcceptanceTestItem {
   final String estimatedTime;
   final bool requiresUsbDac;
   final bool requiresDopSafety;
-  final bool requiresUnplugOrExternalAction;
+  final bool requiresHeadphonesUnplugged;
+  final String observeGuide;
+  final String judgeGuide;
   final List<String> steps;
   final List<String> passCriteria;
   final List<String> failureTags;
-  final List<String> fixtureFiles;
-  final DsdOutputMode desiredDsdMode;
-  final PlaybackMode desiredPlaybackMode;
+  final List<TestSubAction> subActions;
+  final bool supportsRateSweep;
   final List<int> dacRateChecklistHz;
+
+  List<String> get fixtureFiles => subActions.isEmpty ? const [] : subActions.first.fixtureFiles;
+  DsdOutputMode get desiredDsdMode => subActions.isEmpty ? DsdOutputMode.auto : subActions.first.dsdMode;
+  PlaybackMode get desiredPlaybackMode => subActions.isEmpty ? PlaybackMode.sequential : subActions.first.playbackMode;
 }
 
 const List<AcceptanceTestItem> acceptanceCatalog = [
-  // Group 1: Speaker & Anti-Pop
+  // Group 1
   AcceptanceTestItem(
-    id: 'H1',
-    group: AcceptanceGroupId.speakerAndPop,
-    title: '扬声器防爆音：暂停、继续、拖动进度与手动切歌',
-    subtitle: '使用高电平稳态纯音验证，彻底排除原 libmpv 方案的切歌/暂停爆音',
+    id: 'T1',
+    group: AcceptanceGroupId.speakerAntiPop,
+    title: '扬声器防爆音（暂停/拖动/切歌）与同规格 A/B 真无缝',
+    subtitle: '针对 Build #7 H1 爆音与 H2 接缝测试失真的定向修复复测（无需外接 DAC）',
     estimatedTime: '约 1 分钟',
     requiresUsbDac: false,
     requiresDopSafety: false,
-    requiresUnplugOrExternalAction: false,
+    requiresHeadphonesUnplugged: false,
+    observeGuide: '听声是否出现清脆“啪/咔”脉冲爆音；听 6 秒无缝组第 3.0 秒接缝是否如连续原件般平滑无缺口。',
+    judgeGuide: '暂停/继续/松手拖动进度/下一首全无爆音，且「拼接组 A→B」第 3.0 秒与「连续原件」听感一致即通过。',
     steps: [
-      '拔掉外接 DAC，确保路由为「本机扬声器」，将手机音量调至舒适中低档。',
-      '点击下方「启动测试音频」播放 poptest-a.flac（持续 440Hz 纯音）。',
-      '在发声过程中依次按「暂停」→ 等待 1 秒 →「继续」→ 拖动进度条至中点 → 直接按「下一首」切到 poptest-b.flac。',
+      '按什么：拔掉 USB DAC（确保路由为「本机扬声器」），点「动作 1」，发声时依次按 暂停→继续→拖进度条松手→下一首。',
+      '再按什么：依次点「动作 2（拼接组 6秒）」与「动作 3（连续原件 6秒）」分别试听第 3.0 秒前后是否一致。',
+      '怎么判断：全过程无瞬间脉冲爆音，且动作 2 第 3 秒交界处听不出任何停顿或咔哒声。',
     ],
     passCriteria: [
-      '暂停、继续、进度拖动、手动切歌全过程仅听到干净平滑过渡，无脉冲“啪/咔”爆音。',
-      '界面响应跟手，无卡顿或假播放。',
+      '暂停、继续、松手 Seek、手动下一首均平稳过渡，零脉冲爆音。',
+      'gap-a → gap-b（6 秒拼接）第 3 秒交界处零咔哒、零缺口，与 continuous 原件听感一致。',
     ],
-    failureTags: ['暂停爆音', '继续爆音', '拖动Seek爆音', '手动切歌爆音'],
-    fixtureFiles: ['poptest-a.flac', 'poptest-b.flac'],
-  ),
-  AcceptanceTestItem(
-    id: 'H2',
-    group: AcceptanceGroupId.speakerAndPop,
-    title: '同规格真正无缝听感（A → B vs 连续原件）',
-    subtitle: '对比 continuous.wav 与分片 gap-a.wav → gap-b.wav（非零采样边界切割）',
-    estimatedTime: '约 1 分钟',
-    requiresUsbDac: false,
-    requiresDopSafety: false,
-    requiresUnplugOrExternalAction: false,
-    steps: [
-      '点击「启动测试音频」，系统将先播放 4 秒无缝拼接的 gap-a → gap-b，随后可对比 continuous.wav。',
-      '重点聆听第 1 秒刚过（gap-a 到 gap-b 交界处）的连贯性。',
-      '同时观察实时链路卡片的「下一首预排队」状态（应在 A 播放时显示已预排队 gap-b）。',
-    ],
-    passCriteria: [
-      'gap-a → gap-b 过渡完全听不出停顿、重复或咔哒声，与 continuous.wav 听感一致。',
-      '自动切歌瞬间进度条与曲名同步切换至 gap-b.wav。',
-    ],
-    failureTags: ['接缝有间隙', '接缝有咔哒声', '未自动切换'],
-    fixtureFiles: ['gap-a.wav', 'gap-b.wav', 'continuous.wav'],
-  ),
-  AcceptanceTestItem(
-    id: 'H3',
-    group: AcceptanceGroupId.speakerAndPop,
-    title: '全格式兼容与损坏/截断文件安全跳过',
-    subtitle: '依次验证 ALAC / WAV / WavPack / Opus / MP3 / AAC、坏文件跳过与连续正常续播',
-    estimatedTime: '约 1 分钟',
-    requiresUsbDac: false,
-    requiresDopSafety: false,
-    requiresUnplugOrExternalAction: false,
-    steps: [
-      '点击「启动测试音频」，依次播放 alac96、wv96、opus48、lossy.mp3、lossy.aac、两个损坏 FLAC、截断 FLAC 及末尾正常 flac44100。',
-      '等待队列自动跑完，无需手动干预。',
-    ],
-    passCriteria: [
-      'ALAC / WavPack / Opus / MP3 / AAC 均正常出声。',
-      '两个损坏 FLAC 自动跳过且无死循环卡死；截断 FLAC 播放完可解码部分后安全进入末尾正常曲目。',
-    ],
-    failureTags: ['某格式不出声', '坏文件卡死', '崩溃闪退'],
-    fixtureFiles: [
-      'alac96.m4a',
-      'wv96.wv',
-      'opus48.opus',
-      'lossy.mp3',
-      'lossy.aac',
-      'invalid.flac',
-      'invalid-2.flac',
-      'truncated.flac',
-      'short.wav',
-      'flac44100.flac',
+    failureTags: ['暂停爆音', '继续爆音', '拖动Seek爆音', '手动切歌爆音', '接缝有咔哒/间隙'],
+    subActions: [
+      TestSubAction(
+        id: 't1_pop',
+        label: '动作 1：播放防爆音测试 (poptest-a → b)',
+        description: '持续稳态纯音，依次测 暂停 → 继续 → 拖进度松手 → 下一首',
+        fixtureFiles: ['poptest-a.flac', 'poptest-b.flac'],
+      ),
+      TestSubAction(
+        id: 't1_gap_ab',
+        label: '动作 2：播放无缝拼接组 (gap-a → gap-b, 6秒)',
+        description: '仅播 A→B（不再串联原件），重点听第 3.0 秒无缝过渡',
+        fixtureFiles: ['gap-a.wav', 'gap-b.wav'],
+      ),
+      TestSubAction(
+        id: 't1_gap_ref',
+        label: '动作 3：播放连续原件对照 (continuous, 6秒)',
+        description: '未切分连续参考音，用于对比动作 2 的第 3 秒听感',
+        fixtureFiles: ['continuous.wav'],
+      ),
     ],
   ),
 
-  // Group 2: USB DAC Native Sample Rates
+  // Group 2
   AcceptanceTestItem(
-    id: 'D1',
+    id: 'T2',
     group: AcceptanceGroupId.usbDacRates,
-    title: 'USB DAC 识别与全阶梯原采样率切换 (44.1 → 384 kHz)',
-    subtitle: '验证外接 TOPPING DX5 II 是否逐首精准跟随音源采样率，绝不锁定在 48 kHz',
+    title: 'USB DAC 8 档原采样率锁定（含 352.8 kHz）与切频过渡',
+    subtitle: '验证独占 AudioSession + 轮询切频修复后，DX5 II 是否 8 档全跟随且切频不爆音',
     estimatedTime: '约 2 分钟',
     requiresUsbDac: true,
     requiresDopSafety: false,
-    requiresUnplugOrExternalAction: false,
+    requiresHeadphonesUnplugged: false,
+    supportsRateSweep: true,
+    observeGuide: '先看机器自动握手 8 档状态，再对照 DX5 II 前面板每档读数（重点必核 352.8 kHz），并听切频时是否有爆音。',
+    judgeGuide: '必须全部 8 档（含 352.8 kHz）在 DX5 II 屏幕都显示为「匹配」，且切频只有短暂静音、无刺耳爆音才可通过。',
     steps: [
-      '插上 USB-C 线连接 TOPPING DX5 II（切换为 USB 输入，先调低耳放输出音量）。',
-      '点击「启动测试音频」，依次自动播放 44.1 / 48 / 88.2 / 96 / 176.4 / 192 / 384 kHz 7 首 FLAC。',
-      '每首切歌后停留 2 秒，对照 DX5 II 屏幕读数，在下方逐档勾选实际是否匹配（或用「上一首/下一首」微调确认）。',
+      '按什么：连上 DX5 II（调低监听音量），先点下方「一键自动探测 8 档采样率握手」，等待约 2~4 秒。',
+      '再按什么：点「动作 1：播 8 档全阶梯」逐首停 2 秒核对 DX5 II 屏幕，如切过太快可点「动作 2」单独核对 352.8 kHz。',
+      '怎么判断：下方 8 档屏幕读数（44.1 ~ 384 kHz，含 352.8 kHz）全部点选为「匹配」，且无切频爆音。',
     ],
     passCriteria: [
-      'DX5 II 屏幕逐首显示与音源一致的采样率（至少 44.1 ~ 192 kHz 必须 100% 匹配，384 kHz 如实记录设备是否支持）。',
-      '跨采样率切歌允许短暂重锁静音间隔（默认 180 ms），但不得有刺耳脉冲爆音或吞掉开头过多声音。',
-      '信号链路面板显示「无应用层重采样」，iOS 会话采样率与音源一致。',
+      '8 档（44.1 / 48 / 88.2 / 96 / 176.4 / 192 / 352.8 / 384 kHz）机器握手与 DX5 II 屏幕读数均准确匹配。',
+      '跨规格切换允许短静音重锁，不得产生脉冲爆音。',
     ],
-    failureTags: ['DAC锁在48kHz', '高频档位失效', '切频爆音', '切频吞音'],
-    fixtureFiles: [
-      'flac44100.flac',
-      'flac48000.flac',
-      'flac88200.flac',
-      'flac96000.flac',
-      'flac176400.flac',
-      'flac192000.flac',
-      'flac384000.flac',
+    failureTags: ['DAC锁在48kHz', '352.8k/384k失效', '切频爆音', '切频吞音过多'],
+    dacRateChecklistHz: [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000],
+    subActions: [
+      TestSubAction(
+        id: 't2_ladder',
+        label: '动作 1：播放 8 档全阶梯 (44.1 → 384 kHz)',
+        description: '逐档核对 DX5 II 屏幕读数与切频听感',
+        fixtureFiles: [
+          'flac44100.flac',
+          'flac48000.flac',
+          'flac88200.flac',
+          'flac96000.flac',
+          'flac176400.flac',
+          'flac192000.flac',
+          'flac352800.flac',
+          'flac384000.flac',
+        ],
+      ),
+      TestSubAction(
+        id: 't2_3528',
+        label: '动作 2：单独复测 352.8 kHz (flac352800)',
+        description: '单独锁定 DSD128 DoP 同源母频 352.8 kHz',
+        fixtureFiles: ['flac352800.flac'],
+      ),
     ],
-    dacRateChecklistHz: [44100, 48000, 88200, 96000, 176400, 192000, 384000],
   ),
   AcceptanceTestItem(
-    id: 'D2',
+    id: 'T3',
     group: AcceptanceGroupId.usbDacRates,
-    title: 'USB DAC 混合规格、同采样率位深/声道与无缝队列',
-    subtitle: '检验 96 kHz 同规格无缝 + 44.1→96→192→48 跨规格切换 + 16/24-bit 与单声道',
+    title: 'USB DAC 96 kHz 无缝稳态保持与跨规格 / 单声道切换',
+    subtitle: '复测 Build #7 D2 半途掉频（96k→44.1k、192k→48k）与第 3 秒接缝表现',
     estimatedTime: '约 1.5 分钟',
     requiresUsbDac: true,
     requiresDopSafety: false,
-    requiresUnplugOrExternalAction: false,
+    requiresHeadphonesUnplugged: false,
+    observeGuide: '死盯 DX5 II 屏幕 6 秒：96k 拼接与连续播完过程中不得中途闪回 44.1/48k；跨规格队列逐首跟频。',
+    judgeGuide: '6 秒全程稳锁 96 kHz 不闪烁、不掉频、第 3.0 秒零咔哒，且 96→192→48(双/单声道) 准确跟频无爆音。',
     steps: [
-      '保持连接 USB DAC，点击「启动测试音频」。',
-      '队列先播 gap96-a.flac → gap96-b.flac（96kHz/24bit 无缝切换，观察 DX5 II 不得失锁闪烁），再自动跨规格切到 192kHz → 48kHz 16-bit → 48kHz 24-bit → 48kHz 单声道。',
-      '可测试 1 次快按「下一首」和 1 次拖动进度，观察防爆音与最新命令优先响应。',
+      '按什么：点「动作 1（96k 无缝拼接 6秒）」，盯住 DX5 II 屏幕从头到尾 6 秒，可再点「动作 2」对比连续原件。',
+      '再按什么：点「动作 3（跨规格 96k→192k→48k 单/双声道）」观察屏幕依序切换至 96 → 192 → 48 kHz 并保持到曲终。',
+      '怎么判断：全程不出现播到一半突然掉回 44.1/48 kHz，第 3.0 秒无缝无咔哒，切频/快切/单声道均正常出声无爆音。',
     ],
     passCriteria: [
-      '96kHz 同规格切换时 DX5 II 保持 96 kHz 稳定锁定且无缝过渡；跨规格切换时屏幕准确跟随。',
-      '手动切换、快切与拖动进度均无爆音、不卡死。',
+      'gap96-a → gap96-b 全程 6 秒 DX5 II 稳锁 96 kHz，不失锁闪烁、不半途降频、无接缝咔哒。',
+      '192 kHz 与 48 kHz（16b / 24b / 单声道）准确锁频，不降频且无爆音。',
     ],
-    failureTags: ['96k无缝闪烁', '单声道异常', '快切错乱', '爆音'],
-    fixtureFiles: [
-      'gap96-a.flac',
-      'gap96-b.flac',
-      'flac192000.flac',
-      'wav16.wav',
-      'wav24.wav',
-      'mono24.wav',
+    failureTags: ['播中掉回44.1/48k', '96k无缝咔哒或闪烁', '单声道异常', '爆音'],
+    subActions: [
+      TestSubAction(
+        id: 't3_gap96',
+        label: '动作 1：96k 无缝拼接 (gap96-a → gap96-b, 6秒)',
+        description: '验证 96 kHz 6 秒全程稳锁且第 3 秒无缝切换',
+        fixtureFiles: ['gap96-a.flac', 'gap96-b.flac'],
+      ),
+      TestSubAction(
+        id: 't3_ref96',
+        label: '动作 2：96k 连续原件对照 (continuous96, 6秒)',
+        description: '连续 96 kHz 参考曲',
+        fixtureFiles: ['continuous96.flac'],
+      ),
+      TestSubAction(
+        id: 't3_cross',
+        label: '动作 3：跨规格队列 (96k → 192k → 48k 16/24b/单声道)',
+        description: '检验跨采样率不半途掉频与单声道兼容性',
+        fixtureFiles: ['flac96000.flac', 'flac192000.flac', 'wav16.wav', 'wav24.wav', 'mono24.wav'],
+      ),
     ],
   ),
 
-  // Group 3: DSD / DoP Safety-Gated
+  // Group 3
   AcceptanceTestItem(
-    id: 'P1',
-    group: AcceptanceGroupId.dsdAndDop,
-    title: 'DSD64 原生 DoP 点灯测试 (2.8224 MHz → 176.4 kHz 载体)',
-    subtitle: '验证 BASSDSD 2.4.2 DoP 输出能否让 DX5 II 正确识别并点亮 DSD 指示',
-    estimatedTime: '约 30 秒',
-    requiresUsbDac: true,
-    requiresDopSafety: true,
-    requiresUnplugOrExternalAction: false,
-    steps: [
-      '务必先调低 DX5 II 耳放监听音量（如 -40 dB 以下），在 iOS「设置 → 声音与触感反馈 → 耳机安全」将 USB 设备设为「其他设备」，并将 iPhone 音量调到 100%。',
-      '点击「启动测试音频」（系统会自动完成安全核验弹窗）。',
-      '观察 DX5 II 屏幕显示是否从 PCM 切为「DSD 2.82M / DSD64」，然后缓缓调大一点点耳放音量聆听 431Hz/553Hz 纯正测试音。',
-    ],
-    passCriteria: [
-      'DX5 II 面板明确显示 DSD64 / 2.82 MHz（绝非 PCM 176.4 kHz 或 48 kHz）。',
-      '听感为左右声道清晰的温和纯音，无刺耳白噪或底噪爆裂。',
-      '暂停与停止时平稳静音，无刺耳爆音。',
-    ],
-    failureTags: ['只显示PCM176.4', '只显示48k', '刺耳白噪', '启停爆音'],
-    fixtureFiles: ['dsd64.dsf'],
-    desiredDsdMode: DsdOutputMode.dop,
-  ),
-  AcceptanceTestItem(
-    id: 'P2',
-    group: AcceptanceGroupId.dsdAndDop,
-    title: 'DSD128 DoP 点灯与 PCM ↔ DoP ↔ PCM 安全切换',
-    subtitle: '验证 352.8 kHz DoP 载体及 PCM 与 DoP 互相切换的防爆音静音帧保护',
-    estimatedTime: '约 1 分钟',
-    requiresUsbDac: true,
-    requiresDopSafety: true,
-    requiresUnplugOrExternalAction: false,
-    steps: [
-      '保持耳放低监听音量与 iPhone 100% 音量。',
-      '点击「启动测试音频」播放队列：flac44100.flac → dsd64.dsf → dsd128.dsf → flac96000.flac。',
-      '观察每首切换时 DX5 II 是否依次显示：44.1 PCM → DSD64 → DSD128 (5.64M) → 96 PCM。',
-    ],
-    passCriteria: [
-      'DSD64 与 DSD128 均正确点亮 DSD，且切回 96 kHz PCM 后正常退出 DSD 模式。',
-      'PCM ↔ DoP 切换过程有短暂静音过渡，无大声爆鸣或单侧尖叫。',
-    ],
-    failureTags: ['DSD128不识别', '切回PCM无声', '切换爆音'],
-    fixtureFiles: ['flac44100.flac', 'dsd64.dsf', 'dsd128.dsf', 'flac96000.flac'],
-    desiredDsdMode: DsdOutputMode.dop,
-  ),
-  AcceptanceTestItem(
-    id: 'P3',
-    group: AcceptanceGroupId.dsdAndDop,
-    title: 'DoP 安全拦截与非 USB 路由 DSD → PCM 自动降级',
-    subtitle: '验证音量低于 100% 或拔掉 DAC 时，系统绝不错误透传 DoP 导致白噪',
-    estimatedTime: '约 1 分钟',
+    id: 'T4',
+    group: AcceptanceGroupId.lockAndRouting,
+    title: '后台与锁屏 / 控制中心媒体组件恢复及双向播控',
+    subtitle: '复测 Build #7 R2 锁屏组件丢失与取消 .mixWithOthers 后的原生控件表现',
+    estimatedTime: '约 1.5 分钟',
     requiresUsbDac: false,
     requiresDopSafety: false,
-    requiresUnplugOrExternalAction: true,
+    requiresHeadphonesUnplugged: false,
+    observeGuide: '锁屏上必须出现 Fidelune 媒体卡片（显示歌名/采样率）并响应暂停、播放、上一首、下一首与进度条拖动。',
+    judgeGuide: '连播不断音，锁屏媒体卡片清晰可见、所有控件双向同步生效、无爆音，且后台不令 USB DAC 掉回 44.1/48k。',
     steps: [
-      '场景 A（若已连 USB DAC）：将 iPhone 侧边音量按低一格（< 100%），切到「强制 DoP」后播放 dsd64.dsf，确认是否被立刻拦截阻止并弹出安全提示。',
-      '场景 B：切回「自动 (USB DAC 优先 DoP)」，拔掉 DAC 用扬声器播放 dsd64.dsf。',
+      '按什么：点「动作 1（启动 96k/192k 循环队列）」（推荐插 USB DAC 一并核对锁屏采样率保持），上滑桌面听 10 秒后按电源键锁屏。',
+      '观察什么：唤醒屏幕看锁屏是否有播放控制卡片；依次在锁屏点击：暂停 → 播放 → 下一首（切到 192k）→ 上一首 → 拖进度条。',
+      '怎么判断：锁屏卡片正常显示、操控全部即时同步到 App 与 DAC（不掉回 48k），且切歌/拖动无爆音。',
     ],
     passCriteria: [
-      '音量不满 100% 时强制 DoP 立即拦截报错，绝不向 DAC 发送残缺 DoP 造成白噪。',
-      '扬声器下自动模式安全转为 PCM 播放并清晰标注「DSD → PCM（非原生 DoP）」，听感正常。',
+      '锁屏与控制中心正常展示曲目卡片与实时进度。',
+      '锁屏暂停、播放、上一首、下一首、进度条拖动全部双向同步且无爆音。',
+      '后台及锁屏切歌期间 USB DAC 仍稳锁原采样率（96 / 192 kHz）。',
     ],
-    failureTags: ['未拦截低音量DoP', '扬声器播DoP出白噪'],
-    fixtureFiles: ['dsd64.dsf'],
-    desiredDsdMode: DsdOutputMode.auto,
+    failureTags: ['锁屏仍无媒体组件', '锁屏控件无响应', '后台掉回44.1/48k', '锁屏切歌爆音'],
+    subActions: [
+      TestSubAction(
+        id: 't4_lock',
+        label: '动作 1：启动后台与锁屏队列 (96k ↔ 192k ↔ 44.1k)',
+        description: '列表循环，包含 12 秒 96kHz 曲目，锁屏操作更从容',
+        fixtureFiles: ['flac96000.flac', 'flac192000.flac', 'flac44100.flac', 'alac96.m4a'],
+        playbackMode: PlaybackMode.repeatAll,
+      ),
+    ],
+  ),
+  AcceptanceTestItem(
+    id: 'T5',
+    group: AcceptanceGroupId.lockAndRouting,
+    title: 'USB 热插拔防外放 + 插回 / 计时器中断后 96 kHz 稳定保持',
+    subtitle: '使用 12 秒 96 kHz 曲目复测 Build #7 R1/R3 后半段掉频与中断恢复异常',
+    estimatedTime: '约 1.5 分钟',
+    requiresUsbDac: true,
+    requiresDopSafety: false,
+    requiresHeadphonesUnplugged: false,
+    observeGuide: '拔线秒停绝不外放；插回继续后盯住 DX5 II 屏幕直到 12 秒播完，以及 10 秒计时器关闭续播后均稳定保持 96 kHz。',
+    judgeGuide: '拔出零外放 + 插回恢复 96 kHz 不半途掉回 44.1k + 计时器中断结束后正常续播并锁在 96 kHz（手动暂停不被误拉起）。',
+    steps: [
+      '按什么（热插拔）：接好 USB DAC，点「动作 1（12秒 96k 循环）」，播到第 3 秒直接拔 USB 线 → 确认手机不外放 → 等 2 秒插回点「继续」盯到曲终。',
+      '按什么（中断）：保持 96k 播放打开 iPhone「时钟」设 10 秒计时器，响铃时看音乐是否暂停，点关闭计时器看是否自动恢复 96 kHz。',
+      '追加验证：手动暂停后用 5 秒计时器闹铃一次，关闭闹铃时原本暂停的音乐不得误自动起播。',
+    ],
+    passCriteria: [
+      '拔出 USB DAC 秒停零外放；插回继续后 DX5 II 锁回 96 kHz 且不再中途掉回 44.1/48k。',
+      '系统计时器中断暂停后关闭闹铃可自动续播并保持 96 kHz；手动暂停遇中断不误起播。',
+    ],
+    failureTags: ['拔出后意外外放', '插回/续播降回44.1/48k', '中断后不恢复或假播放', '原暂停被误拉起'],
+    subActions: [
+      TestSubAction(
+        id: 't5_hold96',
+        label: '动作 1：启动 96 kHz 12 秒稳态测试 (循环)',
+        description: '专用于 USB 热插拔与闹钟中断后采样率保持验证',
+        fixtureFiles: ['flac96000.flac', 'flac44100.flac'],
+        playbackMode: PlaybackMode.repeatAll,
+      ),
+    ],
   ),
 
-  // Group 4: Hot-Plug, Background & Interruptions
+  // Group 4: DSD / DoP Safety-Gated
   AcceptanceTestItem(
-    id: 'R1',
-    group: AcceptanceGroupId.routingAndSystem,
-    title: 'USB DAC 热插拔防外放与重插恢复',
-    subtitle: '验证拔出 DAC 秒停防外放，插回 DAC 后手动继续能恢复原曲原采样率',
+    id: 'T6',
+    group: AcceptanceGroupId.dsdAndDop,
+    title: 'DoP 全程安全保护闭环（低音量拦截 + 播中降音量熔断 + 扬声器转 PCM）',
+    subtitle: '修复 Build #7 P3 逻辑缺陷：3 个独立按钮分别验证强制 DoP 起播拦截与实时熔断',
     estimatedTime: '约 1 分钟',
+    requiresUsbDac: false,
+    requiresDopSafety: false,
+    requiresHeadphonesUnplugged: true,
+    observeGuide: '务必先物理拔掉耳机！场景 A 低音量下点击即弹安全拦截；场景 B 100% 播起后按音量减键 0.1 秒内立即静默停播；场景 C 扬声器安全出声。',
+    judgeGuide: '3 个独立场景全部严格符合安全预期、任何情况下绝无 DoP 白噪脉冲即通过。',
+    steps: [
+      '安全前置：必须先从 DX5 II / 耳放物理拔下耳机！',
+      '场景 A：接 USB DAC 时先按手机音量减键调低 1 格（<100%），点下方「场景 A（强制 DoP 拦截）」，核对是否立刻阻止并报错。',
+      '场景 B：将手机音量调回 100%，点「场景 B（播中按音量减熔断）」解锁起播 dsd64（无耳机看界面运行），立即按一下手机音量减键，核对是否 0.1 秒内紧急停播。',
+      '场景 C：拔掉 USB DAC（本机扬声器），点「场景 C（扬声器自动转 PCM）」，确认状态显示 DSD → PCM 且为柔和纯音。',
+    ],
+    passCriteria: [
+      '低音量起播（强制 DoP）立即弹出 dop_volume_not_full 安全拦截，绝不透传残缺 DoP。',
+      'DoP 播放期间按一下音量减键（或拔线）0.1 秒内立即紧急静音停止，无白噪漏出。',
+      '扬声器路由下「自动模式」安全转为 PCM 输出，听感为柔和纯音。',
+    ],
+    failureTags: ['未拦截低音量DoP', '播中降音量未立即熔断', '扬声器误出白噪'],
+    subActions: [
+      TestSubAction(
+        id: 't6_low_vol',
+        label: '场景 A：验证低音量起播拦截（强制 DoP，先调低1格）',
+        description: '必须先将 iPhone 侧边音量调低于 100%，再点击测试拦截',
+        fixtureFiles: ['dsd64.dsf'],
+        dsdMode: DsdOutputMode.dop,
+        requiresDopSafety: false,
+        requiresVolumeBelowFull: true,
+      ),
+      TestSubAction(
+        id: 't6_mid_vol',
+        label: '场景 B：验证播中降音量熔断（调回100%，起播后按音量-）',
+        description: '确认已拔耳机！100% 音量解锁起播 DSD64 后立刻按音量减键触发熔断',
+        fixtureFiles: ['dsd64.dsf'],
+        dsdMode: DsdOutputMode.dop,
+        requiresDopSafety: true,
+      ),
+      TestSubAction(
+        id: 't6_speaker',
+        label: '场景 C：验证非 USB 路由自动转 PCM（拔掉 USB 线点我）',
+        description: '扬声器路由下自动安全转为 DSD → PCM 播放',
+        fixtureFiles: ['dsd64.dsf'],
+        dsdMode: DsdOutputMode.auto,
+        requiresDopSafety: false,
+      ),
+    ],
+  ),
+  AcceptanceTestItem(
+    id: 'T7',
+    group: AcceptanceGroupId.dsdAndDop,
+    title: 'DSD64 / DSD128 原生 DoP 点灯与 PCM ↔ DoP 切换（须先拔耳机）',
+    subtitle: 'Build #7 未测项（P1+P2）首次真机硬件点灯核对，修复丢帧对齐后再试听',
+    estimatedTime: '约 1.5 分钟',
     requiresUsbDac: true,
-    requiresDopSafety: false,
-    requiresUnplugOrExternalAction: true,
+    requiresDopSafety: true,
+    requiresHeadphonesUnplugged: true,
+    observeGuide: '先看空载（不插耳机）下 DX5 II 面板是否点亮 DSD64 (2.82M) 与 DSD128 (5.64M)；确认锁灯无误后再用耳放最低音量插耳机试听！',
+    judgeGuide: 'DX5 II 面板正确点亮 DSD64 与 DSD128（绝非 PCM176.4/352.8），耳放最小音量下听到温和纯音且切换 PCM↔DoP 无白噪爆音。',
     steps: [
-      '接好 USB DAC，点击「启动测试音频」播放 96 kHz FLAC。',
-      '播放至第 2～3 秒时直接拔掉 USB-C DAC，确认手机扬声器不会突然外放声音。',
-      '等待 3 秒后重新插回 USB DAC，观察路由刷新为 USB DAC 后点击「继续播放」。',
+      '第 1 步（务必先物理拔下耳机）：在 iOS 耳机安全把 USB 设备设为「其他设备」，手机音量调到 100%，将 DX5 II 耳放旋钮拧至最低（<-50dB）。',
+      '第 2 步（空载看灯）：依次点「步骤 1（DSD64）」与「步骤 2（DSD128）」，仅盯住 DX5 II 屏幕确认点亮 DSD64 / DSD128。',
+      '第 3 步（谨慎听音）：确认屏幕上确实点亮 DSD 后，确保耳放处于最低监听音量再插上耳机，重播步骤 1/2 及「步骤 3（混合切换）」，确认是纯音无白噪。',
     ],
     passCriteria: [
-      '拔出 DAC 瞬间立即安全暂停，零意外扬声器外放。',
-      '插回 DAC 后路由状态正确更新，手动继续从断点恢复播放且 DX5 II 重新显示 96 kHz。',
+      'DX5 II 面板明确显示 DSD64 (2.82M) 与 DSD128 (5.64M)（非 PCM 指示）。',
+      '最低耳放音量下听感为温和纯音，无刺耳全幅白噪。',
+      'PCM 44.1k → DSD64 → DSD128 → PCM 96k 切换平稳，切回 PCM 后正常发声。',
     ],
-    failureTags: ['拔出后意外外放', '插回后假播放无声', '插回降回48k'],
-    fixtureFiles: ['flac96000.flac', 'flac44100.flac'],
-  ),
-  AcceptanceTestItem(
-    id: 'R2',
-    group: AcceptanceGroupId.routingAndSystem,
-    title: '后台播放与锁屏控制中心双向同步',
-    subtitle: '验证锁屏息屏连续播放、切歌、暂停/继续与进度条控制（支持任意路由）',
-    estimatedTime: '约 1.5 分钟',
-    requiresUsbDac: false,
-    requiresDopSafety: false,
-    requiresUnplugOrExternalAction: true,
-    steps: [
-      '点击「启动测试音频」（列表循环），按 Home/上滑返回桌面静听 20 秒，再按电源键锁屏。',
-      '在锁屏界面核对曲名、艺术家、进度条，并依次在锁屏上操作：暂停 → 继续 → 下一首 → 拖动进度条。',
-      '解锁返回 App 核对界面进度与锁屏操作是否完全同步。',
+    failureTags: ['只显示PCM未点亮DSD', 'DSD128不识别', '有刺耳白噪(立即拔线停播!)', 'PCM与DoP切换爆音'],
+    subActions: [
+      TestSubAction(
+        id: 't7_dsd64',
+        label: '步骤 1：空载点亮 DSD64 (176.4k DoP 载波, 6秒)',
+        description: '确认已拔耳机、手机音量 100%，先看 DX5 II 屏幕是否点亮 DSD64',
+        fixtureFiles: ['dsd64.dsf'],
+        dsdMode: DsdOutputMode.dop,
+        requiresDopSafety: true,
+      ),
+      TestSubAction(
+        id: 't7_dsd128',
+        label: '步骤 2：空载点亮 DSD128 (352.8k DoP 载波, 3秒)',
+        description: '看 DX5 II 屏幕是否点亮 DSD128 / 5.64M',
+        fixtureFiles: ['dsd128.dsf'],
+        dsdMode: DsdOutputMode.dop,
+        requiresDopSafety: true,
+      ),
+      TestSubAction(
+        id: 't7_mixed',
+        label: '步骤 3：混合切换 (44.1k PCM → DSD64 → DSD128 → 96k PCM)',
+        description: '确认已点亮 DSD 后再低音量插耳机核对切换听感',
+        fixtureFiles: ['flac44100.flac', 'dsd64.dsf', 'dsd128.dsf', 'flac96000.flac'],
+        dsdMode: DsdOutputMode.dop,
+        requiresDopSafety: true,
+      ),
     ],
-    passCriteria: [
-      '后台与锁屏全程不断音、无卡顿；锁屏信息与进度准确。',
-      '锁屏暂停、继续、切歌、进度拖动全部生效，且无爆音。',
-    ],
-    failureTags: ['锁屏断音', '锁屏控件无响应', '锁屏切歌爆音'],
-    fixtureFiles: ['flac44100.flac', 'alac96.m4a', 'flac192000.flac', 'lossy.aac'],
-    desiredPlaybackMode: PlaybackMode.repeatAll,
-  ),
-  AcceptanceTestItem(
-    id: 'R3',
-    group: AcceptanceGroupId.routingAndSystem,
-    title: '系统中断（来电 / 计时器 / 闹钟）暂停与恢复',
-    subtitle: '验证播放中触发中断能暂停，结束允许恢复时从原位置续播（并保住采样率）',
-    estimatedTime: '约 1.5 分钟',
-    requiresUsbDac: false,
-    requiresDopSafety: false,
-    requiresUnplugOrExternalAction: true,
-    steps: [
-      '点击「启动测试音频」播放列表循环，打开 iPhone「时钟」设置一个 10 秒计时器（或使用另一手机来电）。',
-      '计时器响铃时观察音乐是否自动暂停；等待铃声停止/点击关闭计时器（或挂断来电）。',
-      '再手动暂停播放后测一次短闹钟，验证原本处于暂停状态时结束后不会自己突然起播。',
-    ],
-    passCriteria: [
-      '播放中遇中断立即暂停；中断结束且系统允许恢复时，从原位置自动或正常续播，不出现假播放无声。',
-      '原本手动暂停的状态遇中断结束后保持暂停，不误自动起播。',
-    ],
-    failureTags: ['中断后不恢复', '恢复假播放无声', '原暂停被误拉起'],
-    fixtureFiles: ['flac44100.flac', 'flac96000.flac'],
-    desiredPlaybackMode: PlaybackMode.repeatAll,
   ),
 ];

@@ -68,7 +68,7 @@ class _AcceptanceHomeScreenState extends State<AcceptanceHomeScreen> {
                       children: [
                         Expanded(
                           child: Text(
-                            'BASS 音频与 DAC 集中验收',
+                            'BASS 定向修复与核心复测 (Build #8)',
                             style: Theme.of(context)
                                 .textTheme
                                 .titleMedium
@@ -84,6 +84,11 @@ class _AcceptanceHomeScreenState extends State<AcceptanceHomeScreen> {
                           ),
                         ),
                       ],
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      '共 7 项定向复测（约 8~10 分钟；跳过 4 小时耐久测试；DoP 项务必先物理拔下耳机）',
+                      style: TextStyle(fontSize: 12, color: FideluneColors.amber),
                     ),
                     const SizedBox(height: 10),
                     ClipRRect(
@@ -118,7 +123,7 @@ class _AcceptanceHomeScreenState extends State<AcceptanceHomeScreen> {
                             ctrl.runningAutoTests
                                 ? '正在运行自动校验...'
                                 : (ctrl.totalAutoCount == 0
-                                    ? '一键运行 9 项自动校验'
+                                    ? '一键运行 10 项自动校验'
                                     : '重跑自动校验 (${ctrl.passedAutoCount}/${ctrl.totalAutoCount})'),
                           ),
                         ),
@@ -126,7 +131,7 @@ class _AcceptanceHomeScreenState extends State<AcceptanceHomeScreen> {
                           OutlinedButton.icon(
                             onPressed: () => _openItem(nextItem),
                             icon: const Icon(Icons.play_arrow_rounded, size: 18),
-                            label: Text('继续 ${nextItem.id} · ${nextItem.title.split('：').first}'),
+                            label: Text('继续 ${nextItem.id} · ${nextItem.title.split('（').first}'),
                           ),
                       ],
                     ),
@@ -173,7 +178,7 @@ class _AcceptanceHomeScreenState extends State<AcceptanceHomeScreen> {
                                 ),
                                 Text(
                                   ctrl.totalAutoCount == 0
-                                      ? '涵盖插件加载、24-bit 位精确 SHA-256、0 帧差无缝、DoP 0x05/0xFA 与坏文件容错'
+                                      ? '涵盖插件加载、24-bit SHA-256、0 帧差无缝、DoP 自定义流零丢帧/Seek 奇偶与坏文件容错'
                                       : '已完成 ${ctrl.passedAutoCount}/${ctrl.totalAutoCount} 项通过（点击展开明细）',
                                   style: const TextStyle(fontSize: 12, color: FideluneColors.textSecondary),
                                 ),
@@ -374,7 +379,9 @@ class _ItemRow extends StatelessWidget {
                     children: [
                       _MiniTag(item.estimatedTime, FideluneColors.textSecondary),
                       if (item.requiresUsbDac) _MiniTag('需 USB DAC', FideluneColors.sky),
-                      if (item.requiresDopSafety) _MiniTag('DoP 安全锁', FideluneColors.amber),
+                      if (item.requiresHeadphonesUnplugged) _MiniTag('须先拔耳机', FideluneColors.coral),
+                      if (item.requiresDopSafety && !item.requiresHeadphonesUnplugged)
+                        _MiniTag('DoP 安全锁', FideluneColors.amber),
                     ],
                   ),
                 ],

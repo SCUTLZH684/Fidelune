@@ -40,6 +40,7 @@ abstract class AudioEngineGateway {
   Future<void> acknowledgeDopSafety(bool acknowledged);
   Future<void> updateSettings(EngineSettings settings);
   Future<DacProbeResult> probeDacSampleRate(int hz);
+  Future<List<DacProbeResult>> runUsbDacRateSweep();
   Future<List<TrackSpec>> scanUserMusicFolder();
   Future<List<DiagnosticEvent>> getRecentLogs({int limit = 200});
   Future<Map<String, String>> exportPcmCaptures();
@@ -176,6 +177,15 @@ class MethodChannelAudioEngineGateway implements AudioEngineGateway {
   Future<DacProbeResult> probeDacSampleRate(int hz) async {
     final raw = await _method.invokeMapMethod<String, dynamic>('probeDacSampleRate', {'hz': hz}) ?? const {};
     return DacProbeResult.fromMap(raw);
+  }
+
+  @override
+  Future<List<DacProbeResult>> runUsbDacRateSweep() async {
+    final list = await _method.invokeListMethod<dynamic>('runUsbDacRateSweep') ?? const [];
+    return list
+        .whereType<Map>()
+        .map((m) => DacProbeResult.fromMap(m.cast<String, dynamic>()))
+        .toList();
   }
 
   @override

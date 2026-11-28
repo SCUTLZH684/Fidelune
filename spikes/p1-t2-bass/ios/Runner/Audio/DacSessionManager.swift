@@ -9,12 +9,35 @@ struct RateNegotiationResult: Equatable {
     let routeKind: OutputRouteKind
     let strategyUsed: RateSwitchStrategy
     let settleElapsedMs: Int
+    let phaseReached: String
+    let initialSessionHz: Int
+    let initialBassHz: Int
+    let categoryOptionsRaw: UInt
+    let sessionError: String?
+
+    func toDictionary() -> [String: Any] {
+        [
+            "requestedHz": requestedHz,
+            "sessionActualHz": sessionActualHz,
+            "bassDeviceHz": bassDeviceHz,
+            "matchedTarget": matchedTarget,
+            "routeKind": routeKind.rawValue,
+            "strategyUsed": strategyUsed.rawValue,
+            "settleElapsedMs": settleElapsedMs,
+            "phaseReached": phaseReached,
+            "initialSessionHz": initialSessionHz,
+            "initialBassHz": initialBassHz,
+            "categoryOptionsRaw": Int(categoryOptionsRaw),
+            "sessionError": sessionError as Any,
+        ]
+    }
 }
 
 protocol DacSessionManagerDelegate: AnyObject {
     func sessionDidUpdateProfile(_ profile: DacCapabilityProfile)
     func sessionDidRequestPauseForRouteRemoval(route: OutputRouteKind)
     func sessionDidObserveRouteArrival(profile: DacCapabilityProfile)
+    func sessionDidDetectUnexpectedUsbRateDrop(expectedHz: Int, actualSessionHz: Int, actualBassHz: Int)
     func sessionDidBeginInterruption(wasPlaying: Bool)
     func sessionShouldResumeAfterInterruption()
     func sessionDidObserveMediaServicesLost()
@@ -41,6 +64,8 @@ final class DacSessionManager: NSObject {
     private(set) var pausedForRouteRemoval: Bool = false
     private(set) var userIntervenedDuringInterruption: Bool = false
     private(set) var isDopStreamActive: Bool = false
+    private(set) var activeDopCarrierHz: Int?
+    private(set) var expectedUsbPcmRateHz: Int?
 
     private var bassRateProvider: (() -> Int)?
     private var isPlayingProvider: (() -> Bool)?
@@ -75,72 +100,71 @@ final class DacSessionManager: NSObject {
         self.isPlayingProvider = isPlayingProvider
     }
 
-    /// LyrPlay pattern: activate AVAudioSession ONCE at startup with .playback so Lock Screen
-    /// / MPRemoteCommandCenter controls become eligible without manually fighting BASS session hooks.
-    func activateAtStartup(modeOption: SessionModeOption = .defaultMode) {
-        if !startupConfigured {
-            do {
-                let avMode: AVAudioSession.Mode = (modeOption == .measurement) ? .measurement : .default
-                try adapter.setCategory(.playback, mode: avMode, options: [])
-                try adapter.setActive(true, options: [])
-                startupConfigured = true
+    /// Ensures exclusive AVAudioSession (.playback with options: []) without .mixWithOthers
+    /// so Lock Screen / Remote Commands remain eligible and USB DAC clock negotiation is unshared.
+    @discardableResult
+    func configurePlaybackSession(modeOption: SessionModeOption = .defaultMode) -> String? {
+        let avMode: AVAudioSession.Mode = (modeOption == .measurement) ? .measurement : .default
+        let hadDrift = adapter.category != .playback ||
+            adapter.mode != avMode ||
+            adapter.categoryOptions.rawValue != 0 ||
+            !startupConfigured
+        var errorDesc: String?
+        do {
+            try adapter.setCategory(.playback, mode: avMode, options: [])
+            try adapter.setActive(true, options: [])
+            startupConfigured = true
+            if hadDrift {
                 logger.log(
-                    event: "session-startup-activated",
+                    event: "session-configured",
                     category: "session",
-                    message: "AVAudioSession startup activation succeeded",
+                    message: "Exclusive playback session asserted (mode=\(avMode.rawValue), options=\(adapter.categoryOptions.rawValue))",
                     fields: [
+                        "category": adapter.category.rawValue,
                         "mode": avMode.rawValue,
+                        "categoryOptionsRaw": Int(adapter.categoryOptions.rawValue),
                         "sampleRateHz": Int(adapter.sampleRate.rounded()),
                         "route": currentRouteKind().rawValue,
                     ]
                 )
-            } catch {
-                let nsErr = error as NSError
-                logger.log(
-                    event: "session-startup-error",
-                    category: "session",
-                    message: "AVAudioSession startup activation failed: \(nsErr.domain) (\(nsErr.code))",
-                    fields: ["domain": nsErr.domain, "code": nsErr.code]
-                )
             }
+        } catch {
+            let nsErr = error as NSError
+            errorDesc = "\(nsErr.domain) (\(nsErr.code)): \(nsErr.localizedDescription)"
+            logger.log(
+                event: "session-config-error",
+                category: "session",
+                message: "AVAudioSession configuration failed: \(errorDesc ?? "")",
+                fields: [
+                    "domain": nsErr.domain,
+                    "code": nsErr.code,
+                    "categoryOptionsRaw": Int(adapter.categoryOptions.rawValue),
+                ]
+            )
         }
         registerObserversIfNeeded()
+        return errorDesc
+    }
+
+    func activateAtStartup(modeOption: SessionModeOption = .defaultMode) {
+        _ = configurePlaybackSession(modeOption: modeOption)
     }
 
     func applySessionMode(_ modeOption: SessionModeOption) {
-        let desired: AVAudioSession.Mode = (modeOption == .measurement) ? .measurement : .default
-        guard adapter.mode != desired else { return }
-        do {
-            try adapter.setCategory(.playback, mode: desired, options: [])
-            logger.log(
-                event: "session-mode-changed",
-                category: "session",
-                message: "AVAudioSession mode changed to \(desired.rawValue)",
-                fields: ["mode": desired.rawValue]
-            )
-        } catch {
-            let nsErr = error as NSError
-            logger.log(
-                event: "session-mode-error",
-                category: "session",
-                message: "Failed to change AVAudioSession mode: \(nsErr.localizedDescription)",
-                fields: ["code": nsErr.code]
-            )
-        }
+        _ = configurePlaybackSession(modeOption: modeOption)
     }
 
-    func reactivateSession() {
+    func reactivateSession(modeOption: SessionModeOption = .defaultMode) {
+        _ = configurePlaybackSession(modeOption: modeOption)
+    }
+
+    func setPreferredSampleRateDirect(_ targetHz: Int) -> String? {
         do {
-            try adapter.setActive(true, options: [])
-            logger.log(event: "session-reactivated", category: "session", message: "AVAudioSession reactivated")
+            try adapter.setPreferredSampleRate(Double(targetHz))
+            return nil
         } catch {
             let nsErr = error as NSError
-            logger.log(
-                event: "session-reactivate-error",
-                category: "session",
-                message: "AVAudioSession reactivate failed: \(nsErr.domain) (\(nsErr.code))",
-                fields: ["code": nsErr.code]
-            )
+            return "\(nsErr.domain) (\(nsErr.code)): \(nsErr.localizedDescription)"
         }
     }
 
@@ -192,6 +216,21 @@ final class DacSessionManager: NSObject {
 
     func setDopActive(_ active: Bool) {
         isDopStreamActive = active
+        if !active {
+            activeDopCarrierHz = nil
+        }
+    }
+
+    func setActiveStreamExpectation(isDop: Bool, expectedRateHz: Int?) {
+        if isDop {
+            isDopStreamActive = true
+            activeDopCarrierHz = expectedRateHz
+            expectedUsbPcmRateHz = nil
+        } else {
+            isDopStreamActive = false
+            activeDopCarrierHz = nil
+            expectedUsbPcmRateHz = expectedRateHz
+        }
     }
 
     func validateDopSafety(carrierHz: Int, userAcknowledged: Bool) -> Result<Void, DopSafetyFailure> {
@@ -216,106 +255,224 @@ final class DacSessionManager: NSObject {
         targetHz: Int,
         strategy: RateSwitchStrategy,
         settleDelayMs: Int,
+        sessionModeOption: SessionModeOption = .defaultMode,
         bassReinit: (Int) -> Bool
     ) -> RateNegotiationResult {
+        var sessionError = configurePlaybackSession(modeOption: sessionModeOption)
         let routeKind = currentRouteKind()
         lastRequestedSampleRateHz = targetHz
-
-        if !routeKind.isWiredDacCapable && routeKind != .wiredHeadphones {
-            // Speaker and Bluetooth routes follow system/codec negotiation; record honestly.
-            let sessionHz = Int(adapter.sampleRate.rounded())
-            let bassHz = bassRateProvider?() ?? 0
-            return RateNegotiationResult(
-                requestedHz: targetHz,
-                sessionActualHz: sessionHz,
-                bassDeviceHz: bassHz,
-                matchedTarget: sessionHz == targetHz && bassHz == targetHz,
-                routeKind: routeKind,
-                strategyUsed: strategy,
-                settleElapsedMs: 0
-            )
-        }
 
         let startTime = Date()
         let initialSessionHz = Int(adapter.sampleRate.rounded())
         let initialBassHz = bassRateProvider?() ?? 0
+
+        if !routeKind.isWiredDacCapable && routeKind != .wiredHeadphones {
+            if let err = setPreferredSampleRateDirect(targetHz) {
+                sessionError = sessionError ?? err
+            }
+            let sessionHz = Int(adapter.sampleRate.rounded())
+            let bassHz = bassRateProvider?() ?? 0
+            let matched = (sessionHz == targetHz && bassHz == targetHz)
+            let result = RateNegotiationResult(
+                requestedHz: targetHz,
+                sessionActualHz: sessionHz,
+                bassDeviceHz: bassHz,
+                matchedTarget: matched,
+                routeKind: routeKind,
+                strategyUsed: strategy,
+                settleElapsedMs: 0,
+                phaseReached: "non_wired_route",
+                initialSessionHz: initialSessionHz,
+                initialBassHz: initialBassHz,
+                categoryOptionsRaw: adapter.categoryOptions.rawValue,
+                sessionError: sessionError
+            )
+            logRateNegotiation(result)
+            return result
+        }
+
         if initialSessionHz == targetHz && initialBassHz == targetHz {
             recordProbedRate(targetHz)
-            return RateNegotiationResult(
+            let result = RateNegotiationResult(
                 requestedHz: targetHz,
                 sessionActualHz: initialSessionHz,
                 bassDeviceHz: initialBassHz,
                 matchedTarget: true,
                 routeKind: routeKind,
                 strategyUsed: strategy,
-                settleElapsedMs: 0
+                settleElapsedMs: 0,
+                phaseReached: "already_matched",
+                initialSessionHz: initialSessionHz,
+                initialBassHz: initialBassHz,
+                categoryOptionsRaw: adapter.categoryOptions.rawValue,
+                sessionError: sessionError
             )
+            logRateNegotiation(result)
+            return result
         }
 
-        let clampedSettle = max(0, min(1000, settleDelayMs))
+        var phaseReached = "unmatched"
+        var matched = false
 
-        switch strategy {
-        case .sessionPreferred:
-            try? adapter.setPreferredSampleRate(Double(targetHz))
-            if clampedSettle > 0 {
-                sleepFn(TimeInterval(clampedSettle) / 1000.0)
+        // Phase 1: AVAudioSession preferredSampleRate + bounded polling (up to 450ms)
+        if strategy != .bassReinit {
+            if let err = setPreferredSampleRateDirect(targetHz) {
+                sessionError = sessionError ?? err
             }
-        case .bassReinit:
+            if pollUntilMatched(targetHz: targetHz, timeoutMs: 450, stepMs: 25) {
+                matched = true
+                phaseReached = "phase1_sessionPreferred"
+            }
+        }
+
+        // Phase 2: BASS_DEVICE_FREQ | BASS_DEVICE_REINIT + bounded polling (up to 1100ms for UAC2 clock relock)
+        if !matched && strategy != .sessionPreferred {
             _ = bassReinit(targetHz)
-            if clampedSettle > 0 {
-                sleepFn(TimeInterval(clampedSettle) / 1000.0)
+            if let err = configurePlaybackSession(modeOption: sessionModeOption) {
+                sessionError = sessionError ?? err
             }
-        case .hybrid:
-            try? adapter.setPreferredSampleRate(Double(targetHz))
-            let firstHalfMs = max(30, clampedSettle / 2)
-            if clampedSettle > 0 {
-                sleepFn(TimeInterval(firstHalfMs) / 1000.0)
+            if let err = setPreferredSampleRateDirect(targetHz) {
+                sessionError = sessionError ?? err
             }
-            let midSessionHz = Int(adapter.sampleRate.rounded())
-            let midBassHz = bassRateProvider?() ?? 0
-            if midBassHz != targetHz || midSessionHz != targetHz {
-                _ = bassReinit(targetHz)
+            if pollUntilMatched(targetHz: targetHz, timeoutMs: 1100, stepMs: 25) {
+                matched = true
+                phaseReached = "phase2_bassReinit"
             }
-            let remainingMs = max(0, clampedSettle - firstHalfMs)
-            if remainingMs > 0 {
-                sleepFn(TimeInterval(remainingMs) / 1000.0)
+        }
+
+        // Phase 3: Clean session deactivation/reactivation cycle fallback if still mismatched in hybrid mode
+        if !matched && strategy == .hybrid {
+            do {
+                try adapter.setActive(false, options: [])
+            } catch {
+                let nsErr = error as NSError
+                sessionError = sessionError ?? "\(nsErr.domain) (\(nsErr.code))"
             }
+            sleepFn(0.04)
+            if let err = configurePlaybackSession(modeOption: sessionModeOption) {
+                sessionError = sessionError ?? err
+            }
+            if let err = setPreferredSampleRateDirect(targetHz) {
+                sessionError = sessionError ?? err
+            }
+            _ = bassReinit(targetHz)
+            if pollUntilMatched(targetHz: targetHz, timeoutMs: 600, stepMs: 25) {
+                matched = true
+                phaseReached = "phase3_sessionCycle"
+            } else {
+                phaseReached = "phase3_unmatched"
+            }
+        }
+
+        // Post-lock DAC mute-relay settle when clock changed
+        let clockChanged = (initialSessionHz != targetHz || initialBassHz != targetHz)
+        let clampedPostSettle = max(0, min(250, settleDelayMs))
+        if matched && clockChanged && clampedPostSettle > 0 {
+            sleepFn(TimeInterval(clampedPostSettle) / 1000.0)
         }
 
         let finalSessionHz = Int(adapter.sampleRate.rounded())
         let finalBassHz = bassRateProvider?() ?? 0
-        let matched = (finalSessionHz == targetHz) && (finalBassHz == targetHz)
+        matched = (finalSessionHz == targetHz) && (finalBassHz == targetHz)
         if matched {
             recordProbedRate(targetHz)
+        } else if phaseReached == "unmatched" {
+            phaseReached = "failed_\(strategy.rawValue)"
         }
+
         let elapsedMs = Int((Date().timeIntervalSince(startTime) * 1000.0).rounded())
-
-        logger.log(
-            event: "dac-rate-negotiated",
-            category: "dac",
-            message: "Requested \(targetHz) Hz -> session \(finalSessionHz) Hz, BASS \(finalBassHz) Hz (\(strategy.rawValue))",
-            fields: [
-                "requestedHz": targetHz,
-                "sessionActualHz": finalSessionHz,
-                "bassDeviceHz": finalBassHz,
-                "matchedTarget": matched,
-                "route": routeKind.rawValue,
-                "strategy": strategy.rawValue,
-                "settleElapsedMs": elapsedMs,
-            ]
-        )
-
-        let profile = currentProfile()
-        delegate?.sessionDidUpdateProfile(profile)
-
-        return RateNegotiationResult(
+        let result = RateNegotiationResult(
             requestedHz: targetHz,
             sessionActualHz: finalSessionHz,
             bassDeviceHz: finalBassHz,
             matchedTarget: matched,
             routeKind: routeKind,
             strategyUsed: strategy,
-            settleElapsedMs: elapsedMs
+            settleElapsedMs: elapsedMs,
+            phaseReached: phaseReached,
+            initialSessionHz: initialSessionHz,
+            initialBassHz: initialBassHz,
+            categoryOptionsRaw: adapter.categoryOptions.rawValue,
+            sessionError: sessionError
+        )
+        logRateNegotiation(result)
+
+        let profile = currentProfile()
+        delegate?.sessionDidUpdateProfile(profile)
+
+        return result
+    }
+
+    func runUsbDacRateSweep(
+        rates: [Int] = [44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000],
+        strategy: RateSwitchStrategy = .hybrid,
+        settleDelayMs: Int = 80,
+        sessionModeOption: SessionModeOption = .defaultMode,
+        bassReinit: (Int) -> Bool
+    ) -> [RateNegotiationResult] {
+        var results: [RateNegotiationResult] = []
+        for hz in rates {
+            results.append(
+                negotiateSampleRate(
+                    targetHz: hz,
+                    strategy: strategy,
+                    settleDelayMs: settleDelayMs,
+                    sessionModeOption: sessionModeOption,
+                    bassReinit: bassReinit
+                )
+            )
+        }
+        let matchedRates = results.filter { $0.matchedTarget }.map { $0.requestedHz }
+        logger.log(
+            event: "dac-rate-sweep-completed",
+            category: "dac",
+            message: "USB DAC 8-rate handshake sweep: \(matchedRates.count)/\(results.count) matched",
+            fields: [
+                "matchedRates": matchedRates,
+                "testedRates": rates,
+                "route": currentRouteKind().rawValue,
+            ]
+        )
+        return results
+    }
+
+    private func pollUntilMatched(targetHz: Int, timeoutMs: Int, stepMs: Int) -> Bool {
+        let maxSteps = max(1, timeoutMs / max(1, stepMs))
+        for step in 0..<maxSteps {
+            let sHz = Int(adapter.sampleRate.rounded())
+            let bHz = bassRateProvider?() ?? 0
+            if sHz == targetHz && bHz == targetHz {
+                return true
+            }
+            if step + 1 < maxSteps {
+                sleepFn(TimeInterval(stepMs) / 1000.0)
+            }
+        }
+        let sHz = Int(adapter.sampleRate.rounded())
+        let bHz = bassRateProvider?() ?? 0
+        return sHz == targetHz && bHz == targetHz
+    }
+
+    private func logRateNegotiation(_ res: RateNegotiationResult) {
+        logger.log(
+            event: "dac-rate-negotiated",
+            category: "dac",
+            message: "Requested \(res.requestedHz) Hz -> session \(res.sessionActualHz) Hz, BASS \(res.bassDeviceHz) Hz [\(res.phaseReached)]",
+            fields: [
+                "initialSessionHz": res.initialSessionHz,
+                "initialBassHz": res.initialBassHz,
+                "requestedHz": res.requestedHz,
+                "preferredHz": Int(adapter.preferredSampleRate.rounded()),
+                "sessionActualHz": res.sessionActualHz,
+                "bassDeviceHz": res.bassDeviceHz,
+                "matchedTarget": res.matchedTarget,
+                "route": res.routeKind.rawValue,
+                "strategy": res.strategyUsed.rawValue,
+                "phaseReached": res.phaseReached,
+                "categoryOptionsRaw": Int(res.categoryOptionsRaw),
+                "sessionError": res.sessionError ?? "",
+                "settleElapsedMs": res.settleElapsedMs,
+            ]
         )
     }
 
@@ -395,8 +552,48 @@ final class DacSessionManager: NSObject {
                 "deviceName": profile.deviceName,
                 "sessionHz": profile.currentSessionSampleRateHz,
                 "bassHz": profile.bassDeviceSampleRateHz,
+                "categoryOptionsRaw": Int(adapter.categoryOptions.rawValue),
+                "isDop": isDopStreamActive,
+                "activeDopCarrierHz": activeDopCarrierHz ?? 0,
+                "expectedUsbPcmRateHz": expectedUsbPcmRateHz ?? 0,
             ]
         )
+
+        // Priority 1: Active DoP runtime safety interlock on ANY route/rate/volume anomaly
+        if isDopStreamActive {
+            var safetyViolation: DopSafetyFailure?
+            if currentRoute != .usbAudio {
+                safetyViolation = .nonUsbRoute(currentRoute)
+            } else if profile.outputVolume < 0.999 {
+                safetyViolation = .systemVolumeNotFull(profile.outputVolume)
+            } else if let carrierHz = activeDopCarrierHz,
+                      (profile.currentSessionSampleRateHz != carrierHz ||
+                       (profile.bassDeviceSampleRateHz > 0 && profile.bassDeviceSampleRateHz != carrierHz)) {
+                let actual = profile.currentSessionSampleRateHz != carrierHz
+                    ? profile.currentSessionSampleRateHz
+                    : profile.bassDeviceSampleRateHz
+                safetyViolation = .midStreamRateDrop(expectedHz: carrierHz, actualHz: actual)
+            }
+
+            if let violation = safetyViolation {
+                isDopStreamActive = false
+                activeDopCarrierHz = nil
+                if reason == .oldDeviceUnavailable {
+                    pausedForRouteRemoval = true
+                    resumeAfterInterruption = false
+                    isInterrupted = false
+                }
+                logger.log(
+                    event: "dop-route-safety-halt",
+                    category: "safety",
+                    message: violation.message,
+                    fields: ["code": violation.code, "route": currentRoute.rawValue, "sessionHz": profile.currentSessionSampleRateHz]
+                )
+                delegate?.sessionDidTriggerDopSafetyViolation(reason: violation)
+                delegate?.sessionDidUpdateProfile(profile)
+                return
+            }
+        }
 
         if reason == .oldDeviceUnavailable {
             // Unplugging wired DAC/headphones must pause immediately and never inherit stale resume intent.
@@ -406,6 +603,30 @@ final class DacSessionManager: NSObject {
             delegate?.sessionDidRequestPauseForRouteRemoval(route: currentRoute)
         } else if reason == .newDeviceAvailable {
             delegate?.sessionDidObserveRouteArrival(profile: profile)
+        } else if !isDopStreamActive,
+                  (isPlayingProvider?() ?? false),
+                  !isInterrupted,
+                  currentRoute == .usbAudio,
+                  let expectedHz = expectedUsbPcmRateHz,
+                  (profile.currentSessionSampleRateHz != expectedHz ||
+                   (profile.bassDeviceSampleRateHz > 0 && profile.bassDeviceSampleRateHz != expectedHz)) {
+            logger.log(
+                event: "dac-unexpected-rate-drop",
+                category: "dac",
+                message: "Unexpected USB PCM rate drift during playback: expected \(expectedHz) Hz, observed session=\(profile.currentSessionSampleRateHz) Hz / BASS=\(profile.bassDeviceSampleRateHz) Hz",
+                fields: [
+                    "expectedHz": expectedHz,
+                    "sessionHz": profile.currentSessionSampleRateHz,
+                    "bassHz": profile.bassDeviceSampleRateHz,
+                    "categoryOptionsRaw": Int(adapter.categoryOptions.rawValue),
+                    "reasonText": Self.describe(reason: reason),
+                ]
+            )
+            delegate?.sessionDidDetectUnexpectedUsbRateDrop(
+                expectedHz: expectedHz,
+                actualSessionHz: profile.currentSessionSampleRateHz,
+                actualBassHz: profile.bassDeviceSampleRateHz
+            )
         }
 
         delegate?.sessionDidUpdateProfile(profile)
