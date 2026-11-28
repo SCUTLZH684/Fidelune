@@ -482,37 +482,45 @@ void main() {
       matching: find.byType(Scrollable),
     );
     await tester.scrollUntilVisible(t1Finder, 200, scrollable: homeScroll);
+    await tester.ensureVisible(t1Finder);
     await tester.pumpAndSettle();
     await tester.tap(t1Finder);
     await tester.pumpAndSettle();
 
     // T1 Action 1 plays poptest-a -> b (2 tracks)
+    final detailScroll = find
+        .descendant(
+          of: find.byType(TestItemDetailScreen),
+          matching: find.byType(Scrollable),
+        )
+        .first;
     final action1Btn = find.text('动作 1：播放防爆音测试 (poptest-a → b)');
+    await tester.scrollUntilVisible(action1Btn, 200, scrollable: detailScroll);
     await tester.ensureVisible(action1Btn);
+    await tester.pumpAndSettle();
     await tester.tap(action1Btn);
     await tester.pumpAndSettle();
     expect(gateway.actions, contains('playQueue:2'));
 
     // Selecting a blocking tag disables the "通过并下一项" button
-    final detailScroll = find.descendant(
-      of: find.byType(TestItemDetailScreen),
-      matching: find.byType(Scrollable),
-    );
     final passBtn = find.widgetWithText(FilledButton, '通过并下一项');
     final tagFinder = find.text('暂停爆音');
 
     // First verify Pass button is initially enabled when scrolling to bottom
     await tester.scrollUntilVisible(passBtn, 200, scrollable: detailScroll);
+    await tester.ensureVisible(passBtn);
     await tester.pumpAndSettle();
     expect(tester.widget<FilledButton>(passBtn).onPressed, isNotNull);
 
     // Scroll back up to select blocking tag, then scroll down to verify Pass is disabled
     await tester.scrollUntilVisible(tagFinder, -200, scrollable: detailScroll);
+    await tester.ensureVisible(tagFinder);
     await tester.pumpAndSettle();
     await tester.tap(tagFinder);
     await tester.pumpAndSettle();
 
     await tester.scrollUntilVisible(passBtn, 200, scrollable: detailScroll);
+    await tester.ensureVisible(passBtn);
     await tester.pumpAndSettle();
     expect(tester.widget<FilledButton>(passBtn).onPressed, isNull);
 
@@ -521,12 +529,15 @@ void main() {
     await tester.pumpAndSettle();
     final t6Finder = find.text('DoP 全程安全保护闭环（低音量拦截 + 播中降音量熔断 + 扬声器转 PCM）');
     await tester.scrollUntilVisible(t6Finder, 250, scrollable: homeScroll);
+    await tester.ensureVisible(t6Finder);
     await tester.pumpAndSettle();
     await tester.tap(t6Finder);
     await tester.pumpAndSettle();
 
     final sceneABtn = find.textContaining('场景 A：验证低音量起播拦截');
+    await tester.scrollUntilVisible(sceneABtn, 200, scrollable: detailScroll);
     await tester.ensureVisible(sceneABtn);
+    await tester.pumpAndSettle();
     await tester.tap(sceneABtn);
     await tester.pumpAndSettle();
     expect(gateway.playQueueDsdModes.last, DsdOutputMode.dop);
@@ -542,6 +553,8 @@ void main() {
       matching: find.byType(Scrollable),
     );
     await tester.scrollUntilVisible(sweepBtn, 200, scrollable: dacScroll);
+    await tester.ensureVisible(sweepBtn);
+    await tester.pumpAndSettle();
     await tester.tap(sweepBtn);
     await tester.pumpAndSettle();
     expect(gateway.actions, contains('runUsbDacRateSweep'));

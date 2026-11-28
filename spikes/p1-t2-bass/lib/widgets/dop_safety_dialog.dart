@@ -83,15 +83,18 @@ class _DopSafetyDialogState extends State<DopSafetyDialog> {
                 border: Border.all(color: FideluneColors.coral.withValues(alpha: 0.65)),
               ),
               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              child: CheckboxListTile(
-                value: _headphonesUnplugged,
-                contentPadding: EdgeInsets.zero,
-                controlAffinity: ListTileControlAffinity.leading,
-                title: const Text(
-                  '1. 我已先从 DAC / 耳放物理拔下耳机（先仅看 DAC 面板确认点亮 DSD，再调最低音量插耳机试听）',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: FideluneColors.coral),
+              child: Material(
+                color: Colors.transparent,
+                child: CheckboxListTile(
+                  value: _headphonesUnplugged,
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text(
+                    '1. 我已先从 DAC / 耳放物理拔下耳机（先仅看 DAC 面板确认点亮 DSD，再调最低音量插耳机试听）',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: FideluneColors.coral),
+                  ),
+                  onChanged: (v) => setState(() => _headphonesUnplugged = v ?? false),
                 ),
-                onChanged: (v) => setState(() => _headphonesUnplugged = v ?? false),
               ),
             ),
             const SizedBox(height: 4),
