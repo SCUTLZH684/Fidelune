@@ -1,0 +1,53 @@
+{
+  "packages": [
+    {
+      "name": "bass",
+      "version": "2.4.18.3",
+      "archive": "bass24-ios.zip",
+      "sha256": "087bdb8aec6735a8b8de21253e07270f647cfb7bb3e1f276efa7ba979d46836e",
+      "bytes": 1235301
+    },
+    {
+      "name": "bassmix",
+      "version": "2.4.13.1",
+      "archive": "bassmix24-ios.zip",
+      "sha256": "06113c77b4ef9af5d8d244e7bd1285899f581ba72d6e6e10c05c14908df1566a",
+      "bytes": 237015
+    },
+    {
+      "name": "bassdsd",
+      "version": "2.4.2",
+      "archive": "bassdsd24-ios.zip",
+      "sha256": "0a515018478e54a295a22b1999ce785e48440f273611f0d388c0e16b4033efc8",
+      "bytes": 68740
+    },
+    {
+      "name": "bassflac",
+      "version": "2.4.6.1",
+      "archive": "bassflac24-ios.zip",
+      "sha256": "57dd543278b63e75e6ecd236ee0b9afaf5d79e8ad0880a81d565d5d2ed4aed50",
+      "bytes": 240639
+    },
+    {
+      "name": "basswv",
+      "version": "2.4.7.4",
+      "archive": "basswv24-ios.zip",
+      "sha256": "a517de1f0adc13b811a077408770d1fb297a7b66fb4f3ce3cadb639a685ec058",
+      "bytes": 244085
+    },
+    {
+      "name": "bassape",
+      "version": "2.4.1",
+      "archive": "bassape24-ios.zip",
+      "sha256": "21bedf9e4b70bf3a2ac25f1ce93d46ef1a5a4691cc262742dc9dbcaa55527cc7",
+      "bytes": 309864
+    },
+    {
+      "name": "bassopus",
+      "version": "2.4.3.3",
+      "archive": "bassopus24-ios.zip",
+      "sha256": "33b44809e9e8aa7a949386213336d0b8fa73652ef058caa63aa7cea5d72c2a96",
+      "bytes": 475864
+    }
+  ]
+}

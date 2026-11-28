@@ -1,0 +1,49 @@
+{
+  "productType": "iPhone18,3",
+  "productVersion": "27.2.1",
+  "buildVersion": "24B156",
+  "bundleIdBase": "io.github.scutlzh684.fideluneBass",
+  "bundleIdSuffixRedacted": true,
+  "appDisplayName": "Fidelune BASS",
+  "appShortVersion": "0.2.0",
+  "appBuildVersion": "7",
+  "uiSceneDelegateClassName": "Runner.SceneDelegate",
+  "collectionDateLocal": "2026-11-28",
+  "runnerCrashReportsInTestWindow": 0,
+  "diagnosticsLineCount": 199,
+  "diagnosticsTimeRangeUtc": {
+    "start": "2026-11-28T03:11:17.383Z",
+    "end": "2026-11-28T03:39:51.210Z"
+  },
+  "memoryMb": {
+    "min": 28.8,
+    "max": 223.47,
+    "start": 28.8,
+    "end": 171.64
+  },
+  "eventCounts": {
+    "dac:dac-rate-negotiated": 77,
+    "engine:bass-initialized": 2,
+    "gapless:gapless-advanced": 12,
+    "gapless:gapless-queued": 20,
+    "lifecycle:app-launch": 2,
+    "playback:track-failed": 9,
+    "power:bass-idle-paused": 19,
+    "route:route-changed": 34,
+    "safety:dop-safety-acknowledged": 7,
+    "selftest:self-tests-completed": 1,
+    "session:interruption-began": 2,
+    "session:interruption-ended": 1,
+    "session:session-reactivated": 11,
+    "session:session-startup-activated": 2
+  },
+  "archivedFilesSha256": {
+    "build-7-bass-verified.json": "4d094854517a4ec8ed713300c2a379bf93be673881312197aae81039472e369c",
+    "build-7-fixtures-manifest.json": "17ceaf7952467171c16a641a2f91255a59a8ebd004950dd46736210d8cf64b63",
+    "build-7-info.txt": "489b19f7e73ba4adaef9f1b33c9f57dcf87bf41e9ba062dbb705a020cb3a607c",
+    "device-build-7-acceptance-report.json": "4eea8beb6b31ea91ae836e6c2013d254ca4ba35b103aa0351a36472c32010da2",
+    "device-build-7-acceptance-report.md": "65068894533366b564097f3c3fd2335aafabd0bb0d3fc96658cb537617388830",
+    "device-build-7-acceptance-state.json": "b2f5ce32b608f1a33c63281effa9ae1fc9a8e302cc1dc3722b4f096ae8d348c7",
+    "device-build-7-diagnostics.jsonl": "34c93f8ac9ed47edd44b6b091b0b731353dec03a137ce724bfdb38e11ca0090f"
+  }
+}

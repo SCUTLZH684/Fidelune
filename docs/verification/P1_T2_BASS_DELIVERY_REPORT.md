@@ -1,5 +1,7 @@
 # Fidelune P1-T2-BASS：基于 BASS 的 iOS 音频架构与 DAC 集中验收交付报告
 
+> **Build #7 真机验收已完成与归档**：物理机实测结果、源码根因定位、BASS 留用评估与脱敏日志见 [P1_T2_BASS_ACCEPTANCE_ANALYSIS.md](P1_T2_BASS_ACCEPTANCE_ANALYSIS.md) 与 [p1-t2-bass/](p1-t2-bass/)。
+
 **交付分支**：`feat/p1-t2-bass`  
 **对应工程目录**：[spikes/p1-t2-bass/](../../spikes/p1-t2-bass/)  
 **使用说明**：[spikes/p1-t2-bass/README.md](../../spikes/p1-t2-bass/README.md)  
